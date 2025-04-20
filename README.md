@@ -27,6 +27,44 @@ The project follows a phased approach to development:
 4. **Training & Fine-Tuning**: Develop and apply specialized training protocols
 5. **Evaluation & Benchmarking**: Rigorously validate the model's cognitive capabilities
 
+## Training Infrastructure
+
+The repository includes specialized training protocols for each cognitive module:
+
+### Base Training Framework
+
+The `training/base_trainer.py` provides a foundational training orchestrator with:
+
+- Comprehensive experiment tracking with TensorBoard integration
+- Checkpoint management for model state preservation
+- Configurable training workflows with validation cycles
+- Metrics visualization and analysis tools
+
+### Specialized Cognitive Training
+
+Each cognitive module has a dedicated training protocol:
+
+- **Metacognition Training**: Calibrates the model's self-evaluation capabilities through systematic epistemological feedback
+- **Bayesian Inference Training**: Shapes the model's belief-updating mechanisms through sequential evidence integration tasks
+- **Planning Training**: Develops multi-step reasoning capabilities through structured problem-solving simulations
+- **Numerical Training**: Cultivates precise arithmetic operations with extrapolation beyond training range
+
+## Usage Examples
+
+### Metacognition Training
+
+```bash
+# Train metacognition module with synthetic data
+python examples/train_metacognition.py --hidden_dim 256 --epochs 20 --batch_size 64 --quantize
+```
+
+### Integrated Model Demonstration
+
+```bash
+# Run interactive demonstration of the full integrated model
+python examples/integrated_model.py --model_size mini --visualize --output_dir outputs
+```
+
 ## Installation
 
 ```bash
@@ -40,11 +78,41 @@ source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Install the package in development mode
+pip install -e .
+```
+
+## Project Structure
+
+```
+avian_cognition/
+├── docs/                 # Conceptual documentation
+│   ├── concepts.md       # Philosophical foundations
+│   ├── architecture.md   # Technical architecture design
+│   └── roadmap.md        # Implementation roadmap
+├── examples/             # Example scripts
+│   ├── basic_example.py  # Simple demonstration of core components
+│   ├── train_metacognition.py  # Metacognition training example
+│   └── integrated_model.py  # Full model demonstration
+├── src/                  # Source code
+│   ├── core/             # Core architectural components
+│   │   ├── bitnet.py     # BitNet quantization implementation
+│   │   └── mamba_integration.py  # Mamba-SSM backbone integration
+│   └── modules/          # Cognitive modules
+│       ├── metacognition.py  # Metacognition implementation
+│       ├── bayesian.py   # Bayesian inference implementation
+│       ├── planning.py   # Planning implementation
+│       └── numerical.py  # Numerical competence implementation
+└── training/             # Training protocols
+    ├── base_trainer.py   # Base training framework
+    ├── metacognition_trainer.py  # Metacognition training
+    └── bayesian_trainer.py  # Bayesian inference training
 ```
 
 ## Current Status
 
-This project is in the conceptual and architectural design phase. Documentation of the philosophical foundations and technical specifications is in progress.
+The project has progressed to the implementation phase. The core architectural components and cognitive modules have been implemented, along with training infrastructure for specialized cognitive capabilities. Demonstration examples are available for exploring the system's functionality.
 
 ## License
 
