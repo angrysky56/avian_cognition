@@ -1,0 +1,234 @@
+avian_cognition on  master [!?] via 🐍 v3.12.9 (venv) 
+❯ /home/ty/Repositories/ai_workspace/avian_cognition/venv/bin/python /home/ty/Repositories/ai_workspace/avian_cognition/update_script.py
+=== Updating BitNet Integration ===
+Error: Source file not found: /home/ty/Repositories/ai_workspace/avian_cognition/bitnet_cpp.py
+Error: Source file not found: /home/ty/Repositories/ai_workspace/avian_cognition/bitnet_integration.py
+Updated BitNet quantization test script: /home/ty/Repositories/ai_workspace/test_bitnet_quantization.py
+Updated BitNet setup script: /home/ty/Repositories/ai_workspace/setup_bitnet.py
+Error: Source file not found: /home/ty/Repositories/ai_workspace/avian_cognition/updated_readme.md
+Made executable: /home/ty/Repositories/ai_workspace/setup_bitnet.py
+Made executable: /home/ty/Repositories/ai_workspace/test_bitnet_quantization.py
+
+=== Update Complete ===
+BitNet integration has been updated.
+Next steps:
+1. Run the BitNet setup script:
+   python setup_bitnet.py
+2. Test the BitNet quantization:
+   python test_bitnet_quantization.py
+3. Run the integrated model with quantization:
+   python examples/integrated_model.py --quantize
+============================
+
+avian_cognition on  master [!?] via 🐍 v3.12.9 (venv) 
+❯ /home/ty/Repositories/ai_workspace/avian_cognition/venv/bin/python /home/ty/Repositories/ai_workspace/avian_cognition/setup_bitnet.py
+=== BitNet Setup for Avian Cognition ===
+BitNet repository: /home/ty/Repositories/BitNet
+Project root: /home/ty/Repositories/ai_workspace/avian_cognition
+Model: BitNet-b1.58-2B-4T
+Quantization: i2_s
+Force build: False
+========================================
+Building BitNet with model BitNet-b1.58-2B-4T and quantization i2_s...
+BitNet already built at /home/ty/Repositories/BitNet/build/bin/llama-cli
+Checking BitNet wrapper...
+BitNet wrapper found at /home/ty/Repositories/ai_workspace/avian_cognition/src/core/bitnet_cpp.py
+Checking BitNet integration...
+BitNet integration found at /home/ty/Repositories/ai_workspace/avian_cognition/src/core/bitnet_integration.py
+Testing BitNet integration...
+Successfully imported Mamba and MambaConfig
+Warning: BitNet library not found. Using fallback implementation.
+Successfully imported BitNet integration helpers
+Successfully imported BitNetModel
+BitNet binary found and ready to use
+Successfully imported BitNet integration
+Model path: /home/ty/Repositories/BitNet/models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf
+BitNet integration test passed!
+
+BitNet integration test passed!
+
+=== BitNet Setup Complete ===
+BitNet is now integrated with the Avian Cognition project.
+You can now run the integrated model with BitNet quantization:
+  python examples/integrated_model.py --quantize --model_size mini
+=========================================================
+
+avian_cognition on  master [!?] via 🐍 v3.12.9 (venv) took 2s 
+❯ /home/ty/Repositories/ai_workspace/avian_cognition/venv/bin/python /home/ty/Repositories/ai_workspace/avian_cognition/test_bitnet_quantization.py
+Successfully imported Mamba and MambaConfig
+Warning: BitNet library not found. Using fallback implementation.
+Successfully imported BitNet integration helpers
+=== Testing BitNet Quantization ===
+Model size: mini
+Device: cuda
+Save model: False
+Output directory: outputs
+===================================
+Creating mini model...
+Creating placeholder Mamba backbone
+Created mini model
+
+--- Testing Model Before Quantization ---
+Testing model functionality...
+Model forward pass successful: logits shape = torch.Size([2, 16, 10000])
+Metacognition module successful: confidence shape = torch.Size([2, 1])
+Bayesian module successful: belief state shape = torch.Size([2, 128])
+Planning module successful: plan embedding shape = torch.Size([2, 256])
+Numerical module successful: result shape = torch.Size([2, 256])
+Applying BitNet quantization...
+Model size before quantization: 30.54 MB (FP32)
+Model size after quantization: 0.95 MB (1-bit)
+Compression ratio: 32.00x
+
+--- Testing Model After Quantization ---
+Testing model functionality...
+Model forward pass successful: logits shape = torch.Size([2, 16, 10000])
+Metacognition module successful: confidence shape = torch.Size([2, 1])
+Bayesian module successful: belief state shape = torch.Size([2, 128])
+Planning module successful: plan embedding shape = torch.Size([2, 256])
+Numerical module successful: result shape = torch.Size([2, 256])
+
+=== Test Summary ===
+Model size: mini
+Before quantization: ✓
+After quantization: ✓
+BitNet quantization test passed!
+
+avian_cognition on  master [!?] via 🐍 v3.12.9 (venv) took 3s 
+❯ python examples/integrated_model.py --quantize --model_size mini
+Successfully imported Mamba and MambaConfig
+Warning: BitNet library not found. Using fallback implementation.
+Successfully imported BitNet integration helpers
+=== Avian Cognitive Architecture ===
+Device: cuda
+Model size: mini
+Quantization: True
+Visualization: False
+Output directory: outputs
+Mode: interactive
+====================================
+Creating mini model with quantization=True
+Creating placeholder Mamba backbone
+Applying BitNet quantization to model...
+Applied BitNet quantization using integration helper
+
+=== Avian Cognitive Architecture ===
+
+Core Architecture:
+  Model type: AvianMambaModel
+  Hidden dimension: 256
+  Number of layers: 4
+  Vocabulary size: 10000
+  Quantization: True
+
+Model Size:
+  Total parameters: 8,005,436
+  Trainable parameters: 8,005,436
+  FP32 size: 30.54 MB
+  BitNet (1-bit) size: 0.95 MB
+  Compression ratio: 32.00x
+
+Cognitive Modules:
+  Metacognition: ✓ (33,025 parameters)
+  Bayesian Inference: ✓ (115,328 parameters)
+  Planning: ✓ (1,051,907 parameters)
+  Numerical: ✓ (95,656 parameters)
+=====================================
+
+=== Interactive Mode ===
+Enter queries to test the avian cognitive architecture.
+Type 'exit' to quit, 'info' for model information, or 'help' for commands.
+
+Enter query> info
+
+=== Avian Cognitive Architecture ===
+
+Core Architecture:
+  Model type: AvianMambaModel
+  Hidden dimension: 256
+  Number of layers: 4
+  Vocabulary size: 10000
+  Quantization: True
+
+Model Size:
+  Total parameters: 8,005,436
+  Trainable parameters: 8,005,436
+  FP32 size: 30.54 MB
+  BitNet (1-bit) size: 0.95 MB
+  Compression ratio: 32.00x
+
+Cognitive Modules:
+  Metacognition: ✓ (33,025 parameters)
+  Bayesian Inference: ✓ (115,328 parameters)
+  Planning: ✓ (1,051,907 parameters)
+  Numerical: ✓ (95,656 parameters)
+=====================================
+
+Enter query> help
+exit: Exit the interactive session
+info: Display model information
+meta: Test metacognition module
+bayes: Test Bayesian inference module
+plan: Test planning module
+math: Test numerical module
+generate: Generate text with the model
+help: Show available commands
+
+Enter query> meta
+
+--- Demonstrating Metacognitive Awareness ---
+Generating 500 synthetic examples with varying certainty...
+Metacognition metrics:
+  ROC AUC: 0.5172 (higher is better)
+  Brier score: 0.2509 (lower is better)
+  Expected Calibration Error: 0.0417 (lower is better)
+
+Enter query> bayes
+
+--- Demonstrating Bayesian Inference ---
+Generating synthetic Bayesian inference task...
+Processing evidence sequence...
+
+Belief updating trajectory:
+  Step 0:
+    Ground truth: [0.197 0.108 0.695]
+    Model belief: [0.494 0.525 0.493]
+    KL divergence: -0.1138
+Error: index 1 is out of bounds for dimension 0 with size 1
+
+Enter query> plan
+
+--- Demonstrating Planning & Reasoning ---
+Generating synthetic planning problem...
+Generating reasoning plan...
+
+Planning steps importance:
+  Step 0: 0.3331
+  Step 1: 0.3333
+  Step 2: 0.3336
+
+PCA variance explained: 1.00
+
+Enter query> math
+
+--- Demonstrating Numerical Processing ---
+Testing basic arithmetic operations...
+
+Arithmetic results:
+  5 add 3 = -0.71 (correct: 8, error: 8.71)
+  12 subtract 4 = -0.72 (correct: 8, error: 8.72)
+  25 multiply 5 = -0.67 (correct: 125, error: 125.67)
+  100 divide 10 = -0.90 (correct: 10.0, error: 10.90)
+
+Testing numerical extrapolation...
+  Skipping extrapolation tests due to high base error
+
+Enter query> generate
+Processing query (placeholder functionality)...
+Use 'help' to see available commands
+
+Enter query> why are we still using placeholders?
+Processing query (placeholder functionality)...
+Use 'help' to see available commands
+
+Enter query> 
