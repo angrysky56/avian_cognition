@@ -13,6 +13,8 @@ is to match target probability distributions.
 import os
 import sys
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import argparse
 import numpy as np
 from torch.utils.data import DataLoader, Dataset

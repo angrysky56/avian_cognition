@@ -16,6 +16,8 @@ import sys
 import torch
 import argparse
 import numpy as np
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm # Progress bars
 import time
