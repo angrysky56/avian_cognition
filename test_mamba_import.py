@@ -6,7 +6,7 @@ try:
     from mamba_ssm import Mamba
     print("SUCCESS: mamba_ssm successfully imported.")
     print(f"Mamba: {Mamba}")
-    # print(f"MambaConfig: {MambaConfig}")
+    # print(f"MambaConfig: {MambaConfig}") Could not import mamba_ssm: cannot import name 'MambaConfig' from 'mamba_ssm'
 except ImportError as e:
     print(f"FAIL: Could not import mamba_ssm: {e}")
     
