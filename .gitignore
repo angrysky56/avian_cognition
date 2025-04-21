@@ -1,0 +1,101 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+env.bak/
+venv.bak/
+.python-version
+
+# Model checkpoints and saved models
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+saved_models/
+runs/
+
+# Data and Datasets
+data/
+datasets/
+*.csv
+*.json
+*.jsonl
+*.pkl
+*.h5
+*.hdf5
+*.npz
+*.npy
+
+# Training outputs and logs
+outputs/
+logs/
+results/
+*.log
+tensorboard/
+tb_logs/
+wandb/
+.tensorboard-info/
+lightning_logs/
+
+# Cache and temporary files
+.cache/
+.tmp/
+tmp/
+temp/
+.ipynb_checkpoints/
+*.swp
+*.swo
+
+# IDE specific files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+.Trashes
+.Spotlight-V100
+*.netrwhist
+
+# OS specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Framework-specific
+.torch/
+.pytorch/
+.mamba-cache/
+.transformers_cache/
+
+# Documentation generated files
+docs/_build/
+docs/_static/
+docs/_templates/
+site/
+
+# Serena specific
+.serena/

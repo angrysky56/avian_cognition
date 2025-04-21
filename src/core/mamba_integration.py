@@ -11,9 +11,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 try:
-    from mamba_ssm import Mamba, MambaConfig
-except ImportError:
-    print("Warning: mamba_ssm package not found. Using placeholder implementation.")
+    from mamba_ssm import Mamba
+    from mamba_ssm.models.config_mamba import MambaConfig
+    print("Successfully imported Mamba and MambaConfig")
+except ImportError as e:
+    print(f"Warning: mamba_ssm package import failed: {e}. Using placeholder implementation.")
     # Placeholder for environments without mamba_ssm
     Mamba = type('Mamba', (nn.Module,), {})
     MambaConfig = type('MambaConfig', (), {})
