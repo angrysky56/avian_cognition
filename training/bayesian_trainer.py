@@ -15,7 +15,7 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 
 from .base_trainer import CognitiveTrainer
-from ..src.modules.bayesian import generate_bayesian_training_data
+from src.modules.bayesian import generate_bayesian_training_data
 
 
 class BayesianInferenceTrainer(CognitiveTrainer):

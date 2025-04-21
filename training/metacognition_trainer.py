@@ -6,6 +6,7 @@ metacognition circuit, enabling the emergence of calibrated self-awareness
 through systematic epistemological feedback.
 """
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,7 +15,7 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 
 from .base_trainer import CognitiveTrainer
-from ..src.modules.metacognition import expected_calibration_error, plot_reliability_diagram
+from src.modules.metacognition import expected_calibration_error, plot_reliability_diagram
 
 
 class MetacognitionTrainer(CognitiveTrainer):

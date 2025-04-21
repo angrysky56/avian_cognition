@@ -321,6 +321,28 @@ def demonstrate_bayesian_inference(model, args):
         device=args.device
     )
     
+    # Reshape evidence to match bayesian module input dimensions
+    # The bayesian module expects [batch_size, hidden_dim] but gets [batch_size, feature_dim]
+    hidden_dim = model.config.d_model if hasattr(model.config, 'd_model') else 256
+    
+    # Create properly shaped evidence tensors
+    shaped_evidence = []
+    for t in range(seq_len):
+        # Get current evidence and convert to proper shape
+        original_evidence = evidence_sequences[0, t]  # [batch_size=1, feature_dim]
+        
+        # Create a properly shaped hidden state
+        reshaped_evidence = torch.zeros(1, hidden_dim, device=args.device)
+        
+        # Copy values from original evidence to the beginning of the reshaped tensor
+        feature_dim = original_evidence.size(-1)
+        reshaped_evidence[0, :feature_dim] = original_evidence
+        
+        shaped_evidence.append(reshaped_evidence)
+    
+    # Replace original evidence sequences with correctly shaped ones
+    evidence_sequences = torch.stack(shaped_evidence)  # [seq_len, batch_size, hidden_dim]
+    
     # Process sequence through Bayesian module
     print("Processing evidence sequence...")
     
@@ -342,7 +364,7 @@ def demonstrate_bayesian_inference(model, args):
             belief_states.append(belief_state.cpu().clone())
             
             # Convert to probabilities 
-            if hasattr(bayesian_module, 'belief_activation') and isinstance(bayesian_module.belief_activation, nn.Tanh):
+            if hasattr(bayesian_module, 'belief_activation') and isinstance(bayesian_module.belief_activation, torch.nn.Tanh):
                 probs = (belief_state + 1) / 2
             else:
                 probs = torch.softmax(belief_state[:, :num_hypotheses], dim=1)
@@ -615,11 +637,23 @@ def demonstrate_numerical(model, args):
             # Simple decoding (just retrieve from first dimension)
             result_value = result_hidden[0, 0].item() * 100.0
             
+            # Calculate correct result safely without using eval
+            if op_name == 'add':
+                correct_result = a + b
+            elif op_name == 'subtract':
+                correct_result = a - b
+            elif op_name == 'multiply':
+                correct_result = a * b
+            elif op_name == 'divide':
+                correct_result = a / b if b != 0 else float('inf')
+            else:
+                correct_result = 0.0
+                
             # Store result
             results[op_name] = {
                 'operands': (a, b),
                 'model_result': result_value,
-                'correct_result': eval(f"{a} {op_name} {b}"),
+                'correct_result': correct_result,
                 'op_weights': op_weights[0].cpu().numpy()
             }
     

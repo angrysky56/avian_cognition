@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..core.bitnet import BitLinear, NALULayer
+from src.core.bitnet import BitLinear, NALULayer
 
 
 class NumericalModule(nn.Module):

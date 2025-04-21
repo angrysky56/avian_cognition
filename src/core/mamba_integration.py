@@ -20,11 +20,17 @@ except ImportError as e:
     Mamba = type('Mamba', (nn.Module,), {})
     MambaConfig = type('MambaConfig', (), {})
 
-from ..core.bitnet import BitLinear, convert_linear_to_bit_linear
-from ..modules.metacognition import MetacognitionModule
-from ..modules.bayesian import BayesianInferenceModule
-from ..modules.planning import PlanningModule
-from ..modules.numerical import NumericalModule
+from src.core.bitnet import BitLinear, convert_linear_to_bit_linear
+try:
+    from src.core.bitnet_integration import apply_bitnet_quantization, get_bitnet_model
+    print("Successfully imported BitNet integration helpers")
+except ImportError:
+    print("Warning: BitNet integration helpers not found")
+    
+from src.modules.metacognition import MetacognitionModule
+from src.modules.bayesian import BayesianInferenceModule
+from src.modules.planning import PlanningModule
+from src.modules.numerical import NumericalModule
 
 
 class AvianMambaConfig:
@@ -238,6 +244,19 @@ class AvianMambaModel(nn.Module):
         Applies BitNet quantization to all linear layers in the model.
         """
         print("Applying BitNet quantization to model...")
+        
+        # Try to use BitNet integration helper if available
+        try:
+            from src.core.bitnet_integration import apply_bitnet_quantization, get_bitnet_model
+            # Get BitNet model
+            bitnet_model = get_bitnet_model()
+            # Apply quantization
+            apply_bitnet_quantization(self, bitnet_model)
+            print("Applied BitNet quantization using integration helper")
+            return
+        except (ImportError, Exception) as e:
+            print(f"Warning: BitNet integration failed: {e}")
+            print("Falling back to basic BitLinear quantization")
         
         # Skip embedding and layer norm, which are typically not quantized
         modules_to_quantize = [
@@ -504,6 +523,22 @@ class AvianMambaModel(nn.Module):
             return output_ids, confidence
         else:
             return output_ids
+            
+    def use_bitnet_model(self, model_path=None):
+        """
+        Load and use a BitNet model for inference
+        
+        Args:
+            model_path: Path to BitNet model or None to use default
+        """
+        try:
+            from src.core.bitnet_integration import get_bitnet_model
+            bitnet_model = get_bitnet_model(local_path=model_path)
+            print(f"Using BitNet model: {bitnet_model.model_path or 'None'}")
+            return bitnet_model
+        except ImportError:
+            print("BitNet integration not available")
+            return None
     
     @classmethod
     def from_pretrained(cls, model_path, config=None, **kwargs):
@@ -668,3 +703,23 @@ def create_medium_model(quantize=True):
     )
     
     return AvianMambaModel(config)
+
+
+def get_bitnet_model(path=None):
+    """
+    Get a BitNet model for use in Avian Cognition.
+    
+    This is a convenience function that forwards to the bitnet_integration module.
+    
+    Args:
+        path: Path to BitNet model
+        
+    Returns:
+        model: BitNetWrapper instance or None if not available
+    """
+    try:
+        from src.core.bitnet_integration import get_bitnet_model as _get_bitnet_model
+        return _get_bitnet_model(local_path=path)
+    except ImportError:
+        print("BitNet integration not available")
+        return None

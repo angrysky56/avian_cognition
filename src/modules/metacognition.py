@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.calibration import calibration_curve
 
-from ..core.bitnet import BitLinear
+from src.core.bitnet import BitLinear
 
 
 class MetacognitionModule(nn.Module):

@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..core.bitnet import BitLinear
+from src.core.bitnet import BitLinear
 
 
 class BayesianInferenceModule(nn.Module):
