@@ -1,13 +1,11 @@
 """
 Metacognition Module Training Script
 
-This script trains the MetacognitionModule. 
-Currently, it uses synthetic data for structural testing and demonstration.
+This script trains the MetacognitionModule to predict whether the main model's prediction
+for a given hidden state is correct, helping the model develop calibrated confidence.
 
-**IMPORTANT:** For practical use, replace the SyntheticMetacognitionDataset 
-with a dataset derived from a primary task (e.g., language modeling). This dataset 
-should contain pairs of hidden states from the main model and binary labels 
-indicating whether the main model's prediction for that state was correct.
+This module is trained using real data from a language model's hidden states and
+correctness labels (whether the prediction was correct or not).
 """
 
 import os
@@ -15,13 +13,29 @@ import sys
 import torch
 import argparse
 import numpy as np
+import logging
+from pathlib import Path
 from torch.utils.data import DataLoader, Dataset
 
+# Optional imports for datasets
+try:
+    from datasets import load_dataset
+    has_hf_datasets = True
+except ImportError:
+    has_hf_datasets = False
+    print("Warning: HuggingFace datasets not found. Install with pip install datasets")
+
 # Add parent directory to path for imports
-# Ensure this path is correct relative to where you run the script
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('metacognition_training')
 
 # Attempt imports, provide guidance if they fail
 try:
@@ -46,115 +60,169 @@ except ImportError:
      sys.exit(1)
 
 
-class SyntheticMetacognitionDataset(Dataset):
+class MetacognitionDataset(Dataset):
     """
-    Generates synthetic data for **debugging/demonstrating** metacognition training.
-
-    Creates hidden states with artificial patterns correlated with correctness.
-    **This is NOT suitable for training a production-ready module.**
-    Replace with real data (model hidden states + correctness labels) for actual use.
+    Dataset for metacognition training using real hidden states and correctness labels.
+    
+    This dataset loads pre-processed data containing language model hidden states
+    and binary labels indicating whether the model's prediction was correct.
     
     Attributes:
-        hidden_dim (int): Dimension of hidden state representations.
-        size (int): Number of examples in the dataset.
-        hidden_states (torch.Tensor): Generated hidden state representations.
-        correctness (torch.Tensor): Generated binary correctness indicators (0 or 1).
+        data_path (str): Path to the data files
+        hidden_states (torch.Tensor): Hidden state representations from the model
+        correctness (torch.Tensor): Binary correctness indicators (0 or 1)
     """
     
-    def __init__(self, hidden_dim: int = 768, size: int = 10000, pattern_strength: float = 0.5, seed: int = 42):
+    def __init__(self, data_path: str, hidden_dim: int = 768, device="cpu"):
         """
-        Initialize synthetic metacognition dataset.
+        Initialize metacognition dataset from real model outputs.
+        
+        Args:
+            data_path: Path to the directory or file containing the data
+            hidden_dim: Dimension of hidden state representations
+            device: Device to load tensors to
         """
+        self.data_path = data_path
         self.hidden_dim = hidden_dim
-        self.size = size
-        self.pattern_strength = pattern_strength
-        self.seed = seed
+        self.device = device
         
-        # Generate data on initialization
-        self._generate_data()
+        # Load data
+        self._load_data()
         
-    def _generate_data(self):
-        """Generates synthetic hidden states and correctness indicators."""
-        print(f"Generating {self.size} synthetic samples with hidden_dim={self.hidden_dim}, seed={self.seed}...")
-        # Set random seed for reproducibility within data generation
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
+    def _load_data(self):
+        """Loads hidden states and correctness labels from files."""
+        logger.info(f"Loading metacognition data from {self.data_path}")
         
-        # Define some arbitrary patterns
-        # Using more patterns might make the task slightly more complex
-        num_patterns = 10 
-        correctness_patterns = torch.randn(num_patterns, self.hidden_dim)
-        error_patterns = torch.randn(num_patterns, self.hidden_dim)
+        data_path = Path(self.data_path)
         
-        # Initialize storage
-        self.hidden_states = torch.zeros(self.size, self.hidden_dim)
-        self.correctness = torch.zeros(self.size, 1)
+        # Check if path exists
+        if not data_path.exists():
+            raise FileNotFoundError(f"Data path {self.data_path} does not exist")
+            
+        # There are multiple ways to load the data depending on format:
+        # 1. Loading from .pt files (PyTorch tensors)
+        if data_path.is_file() and data_path.suffix == '.pt':
+            logger.info("Loading data from PyTorch .pt file")
+            data = torch.load(data_path, map_location=self.device)
+            self.hidden_states = data.get('hidden_states')
+            self.correctness = data.get('correctness')
         
-        # Generate each example
-        for i in range(self.size):
-            # Determine if this example is correct (50% probability)
-            is_correct = np.random.rand() > 0.5
+        # 2. Loading from HuggingFace dataset
+        elif has_hf_datasets and (data_path.is_dir() or data_path.as_posix().startswith('hf://')):
+            logger.info("Loading data from HuggingFace dataset")
+            dataset = load_dataset(self.data_path)
             
-            # Base representation (random noise)
-            # Normalize base noise slightly
-            hidden_state = torch.randn(self.hidden_dim) * 0.5 
+            # This assumes the dataset has columns named 'hidden_states' and 'correctness'
+            # Adjust column names if your dataset uses different names
+            hidden_states = []
+            correctness = []
             
-            # Select patterns based on correctness
-            patterns_to_use = self.correctness_patterns if is_correct else self.error_patterns
+            # Get the split (train/validation)
+            split = 'train' if 'train' in dataset else list(dataset.keys())[0]
             
-            # Add selected patterns with random strength and selection
-            num_active_patterns = np.random.randint(1, num_patterns // 2 + 1) # Apply 1 to N/2 patterns
-            active_indices = np.random.choice(num_patterns, num_active_patterns, replace=False)
+            # Load the data
+            for item in dataset[split]:
+                hidden_states.append(torch.tensor(item['hidden_states']))
+                correctness.append(torch.tensor([item['correctness']]))
             
-            for idx in active_indices:
-                # Vary strength more significantly
-                strength = self.pattern_strength * (0.5 + np.random.rand() * 1.5) # Strength variation
-                hidden_state += strength * patterns_to_use[idx]
+            self.hidden_states = torch.stack(hidden_states)
+            self.correctness = torch.stack(correctness)
             
-            # Normalize the final hidden state (optional, but can help training)
-            hidden_state = hidden_state / torch.norm(hidden_state)
-
-            # Store example
-            self.hidden_states[i] = hidden_state
-            self.correctness[i] = 1.0 if is_correct else 0.0
+        # 3. Custom loading logic can be added here for other formats
+        else:
+            raise ValueError(f"Unsupported data format for {self.data_path}. "
+                           "Please provide a .pt file or HuggingFace dataset")
             
+        # Verify data loaded correctly
+        if self.hidden_states is None or self.correctness is None:
+            raise ValueError("Failed to load hidden_states or correctness from the data source")
+            
+        # Verify shapes
+        if len(self.hidden_states) != len(self.correctness):
+            raise ValueError(f"Mismatch between hidden_states length ({len(self.hidden_states)}) "
+                           f"and correctness length ({len(self.correctness)})")
+                           
+        if self.hidden_states.shape[1] != self.hidden_dim:
+            logger.warning(f"Hidden state dimension in data ({self.hidden_states.shape[1]}) "
+                          f"does not match expected dimension ({self.hidden_dim})")
+        
+        logger.info(f"Loaded {len(self.hidden_states)} examples with hidden_dim={self.hidden_states.shape[1]}")
+        
     def __len__(self) -> int:
         """Return the size of the dataset."""
-        return self.size
+        return len(self.hidden_states)
         
     def __getitem__(self, idx: int) -> dict:
         """Retrieve a single example."""
-        if idx >= self.size:
+        if idx >= len(self.hidden_states):
             raise IndexError("Index out of bounds")
         return {
-            # Ensure data types are consistent (e.g., float32)
             'hidden_states': self.hidden_states[idx].float(), 
             'correctness': self.correctness[idx].float()
         }
 
-
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Metacognition Module Training")
-    # Model/Data Args
-    parser.add_argument("--hidden_dim", type=int, default=256, help="Hidden dimension for MetacognitionModule input")
-    parser.add_argument("--intermediate_dim", type=int, default=None, help="Intermediate dimension (default: hidden_dim // 2)")
-    parser.add_argument("--quantize", action="store_true", help="Use BitLinear layers instead of nn.Linear")
+    
+    # Model Args
+    parser.add_argument("--hidden_dim", type=int, default=768, 
+                        help="Hidden dimension for MetacognitionModule input")
+    parser.add_argument("--intermediate_dim", type=int, default=None, 
+                        help="Intermediate dimension (default: hidden_dim // 2)")
+    parser.add_argument("--quantize", action="store_true", 
+                        help="Use BitLinear layers instead of nn.Linear")
+    
+    # Data Args
+    parser.add_argument("--train_data_path", type=str, required=True,
+                        help="Path to training data (file or directory)")
+    parser.add_argument("--val_data_path", type=str, required=True,
+                        help="Path to validation data (file or directory)")
+    parser.add_argument("--data_format", type=str, default="pt",
+                        choices=["pt", "hf", "custom"],
+                        help="Format of data files (pt: PyTorch, hf: HuggingFace, custom)")
+    
     # Training Args
-    parser.add_argument("--epochs", type=int, default=50, help="Maximum number of training epochs") # Increased max epochs
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size for training") # Slightly larger bs
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate for Adam optimizer") # Often lower LR is better
-    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adam", "adamw"], help="Optimizer type")
-    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer")
+    parser.add_argument("--epochs", type=int, default=50, 
+                        help="Maximum number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=128, 
+                        help="Batch size for training")
+    parser.add_argument("--learning_rate", type=float, default=1e-4, 
+                        help="Learning rate for optimizer")
+    parser.add_argument("--optimizer", type=str, default="adamw", 
+                        choices=["adam", "adamw"], 
+                        help="Optimizer type")
+    parser.add_argument("--weight_decay", type=float, default=0.01, 
+                        help="Weight decay for AdamW optimizer")
+    
     # Early Stopping Args
-    parser.add_argument("--early_stopping_patience", type=int, default=5, help="Epochs to wait for improvement before stopping (0 to disable)")
-    parser.add_argument("--early_stopping_metric", type=str, default="val_loss", help="Metric to monitor for early stopping (e.g., 'val_loss', 'val_ece')")
-    parser.add_argument("--early_stopping_mode", type=str, default="min", choices=["min", "max"], help="Mode for early stopping ('min' for loss/ECE, 'max' for accuracy)")
+    parser.add_argument("--early_stopping_patience", type=int, default=5, 
+                        help="Epochs to wait for improvement before stopping (0 to disable)")
+    parser.add_argument("--early_stopping_metric", type=str, default="val_loss", 
+                        help="Metric to monitor for early stopping (e.g., 'val_loss', 'val_ece')")
+    parser.add_argument("--early_stopping_mode", type=str, default="min", 
+                        choices=["min", "max"], 
+                        help="Mode for early stopping ('min' for loss/ECE, 'max' for accuracy)")
+    
+    # Checkpoint Args
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/metacognition",
+                        help="Directory to save model checkpoints")
+    parser.add_argument("--load_checkpoint", type=str, default=None,
+                        help="Path to checkpoint to resume training from")
+    
     # Runtime Args
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
-    parser.add_argument("--num_workers", type=int, default=min(os.cpu_count(), 4), help="Number of workers for DataLoader")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
-    parser.add_argument("--experiment_name", type=str, default="MetacognitionSynthetic", help="Name for logging directory")
+    parser.add_argument("--device", type=str, 
+                        default="cuda" if torch.cuda.is_available() else "cpu", 
+                        help="Device (cuda or cpu)")
+    parser.add_argument("--num_workers", type=int, 
+                        default=min(os.cpu_count() or 1, 4), 
+                        help="Number of workers for DataLoader")
+    parser.add_argument("--seed", type=int, default=42, 
+                        help="Random seed for reproducibility")
+    parser.add_argument("--experiment_name", type=str, default=None,
+                        help="Name for logging directory (default: auto-generated from timestamp)")
+    parser.add_argument("--log_interval", type=int, default=10,
+                        help="Log training metrics every N batches")
 
     return parser.parse_args()
 
@@ -185,139 +253,178 @@ def create_model(args):
 
 
 def create_datasets(args):
-    """Creates synthetic training and validation datasets."""
-    print("Creating synthetic datasets (FOR DEBUGGING/DEMO ONLY)...")
-    print("Replace with real data loading for actual training.")
+    """Creates training and validation datasets using real model data."""
+    logger.info("Loading real model data for metacognition training...")
     
-    train_dataset = SyntheticMetacognitionDataset(
-        hidden_dim=args.hidden_dim,
-        size=10000, # Example size
-        pattern_strength=0.6, # Slightly stronger pattern?
-        seed=args.seed # Use main seed for train set
-    )
-    
-    val_dataset = SyntheticMetacognitionDataset(
-        hidden_dim=args.hidden_dim,
-        size=2000, # Example size
-        pattern_strength=0.6,
-        seed=args.seed + 1 # Use different seed for validation set
-    )
-    
-    return train_dataset, val_dataset
+    try:
+        # Create train dataset
+        train_dataset = MetacognitionDataset(
+            data_path=args.train_data_path,
+            hidden_dim=args.hidden_dim,
+            device=args.device if args.device == "cpu" else "cpu"  # Load to CPU first, then move to GPU in batches
+        )
+        
+        # Create validation dataset
+        val_dataset = MetacognitionDataset(
+            data_path=args.val_data_path,
+            hidden_dim=args.hidden_dim,
+            device=args.device if args.device == "cpu" else "cpu"
+        )
+        
+        logger.info(f"Successfully loaded {len(train_dataset)} training examples and {len(val_dataset)} validation examples")
+        
+        return train_dataset, val_dataset
+        
+    except Exception as e:
+        logger.error(f"Error loading datasets: {str(e)}")
+        raise
 
 
 def main():
     """Main training execution function."""
     args = parse_args()
-    set_seed(args.seed) # Set seed early
+    set_seed(args.seed)  # Set seed early
 
-    print("=== Metacognition Training Configuration ===")
+    # Create experiment name if not provided
+    if args.experiment_name is None:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.experiment_name = f"Metacognition_{timestamp}"
+
+    # Create checkpoint directory
+    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("=== Metacognition Training Configuration ===")
     for arg, value in vars(args).items():
-        print(f"  {arg}: {value}")
-    print("=============================================")
+        logger.info(f"  {arg}: {value}")
+    logger.info("=============================================")
     
     # --- Setup ---
+    logger.info("Creating metacognition model...")
     model = create_model(args)
-    train_dataset, val_dataset = create_datasets(args)
     
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True if args.device == "cuda" else False # Pin memory for faster GPU transfer
-    )
+    # Load checkpoint if provided
+    if args.load_checkpoint:
+        checkpoint_path = Path(args.load_checkpoint)
+        if checkpoint_path.exists():
+            logger.info(f"Loading checkpoint from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path, map_location=args.device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            logger.info(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
+        else:
+            logger.warning(f"Checkpoint {checkpoint_path} not found, starting from scratch")
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size * 2, # Can often use larger batch size for validation
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True if args.device == "cuda" else False
-    )
+    logger.info("Loading datasets...")
+    try:
+        train_dataset, val_dataset = create_datasets(args)
+    
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=True if args.device == "cuda" else False
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size * 2,  # Larger batch size for validation
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True if args.device == "cuda" else False
+        )
+    except Exception as e:
+        logger.error(f"Failed to create datasets: {e}")
+        raise
     
     # Create Optimizer
+    logger.info(f"Creating {args.optimizer} optimizer with lr={args.learning_rate}")
     if args.optimizer == "adamw":
-         optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    else: # adam
-         optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate) # Adam doesn't use weight_decay arg directly
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    else:  # adam
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
-    # Loss Function (criterion) - Binary Cross Entropy is suitable here
-    criterion = torch.nn.BCELoss() 
+    # Loss Function (criterion) - Binary Cross Entropy is suitable for confidence prediction
+    criterion = torch.nn.BCELoss()
     
     # --- Trainer Initialization ---
-    # Assuming MetacognitionTrainer handles the training loop, evaluation,
-    # logging, checkpointing (saving the *best* model based on validation metric), 
-    # and early stopping logic.
     trainer_config = {
-        # Pass essential parameters the trainer might need
         'learning_rate': args.learning_rate,
         'epochs': args.epochs,
         'batch_size': args.batch_size,
-        # Early stopping config (assuming trainer uses these names)
         'early_stopping_patience': args.early_stopping_patience,
         'early_stopping_metric': args.early_stopping_metric,
         'early_stopping_mode': args.early_stopping_mode,
-        # Optional: intervals for checkpointing/logging if configurable
-        'checkpoint_interval': 1, # Checkpoint every epoch? Or based on improvement
-        'log_interval': 50, # Log every 50 batches?
-        # Add any other config MetacognitionTrainer expects
+        'checkpoint_interval': 1,
+        'log_interval': args.log_interval,
+        'hidden_dim': args.hidden_dim
     }
 
-    print("\nInitializing MetacognitionTrainer...")
-    print("NOTE: Assumes MetacognitionTrainer implements training loop, evaluation (acc, ECE),")
-    print("      logging, checkpointing (best model based on val metric), and early stopping.")
-
+    logger.info("Initializing MetacognitionTrainer...")
+    
     trainer = MetacognitionTrainer(
         model=model,
         optimizer=optimizer,
         criterion=criterion,
         device=args.device,
-        config=trainer_config, # Pass the structured config
-        # Provide a name for logging outputs (TensorBoard, files, etc.)
-        experiment_name=args.experiment_name 
-        # confidence_threshold=0.5, # This seems less relevant for training itself
+        config=trainer_config,
+        experiment_name=args.experiment_name
     )
     
     # --- Training ---
-    print(f"\nStarting training for {args.epochs} epochs (with early stopping patience {args.early_stopping_patience})...")
+    logger.info(f"Starting training for {args.epochs} epochs (with early stopping patience {args.early_stopping_patience})...")
     
     try:
-        # Assuming train returns history including best metrics
         training_history = trainer.train(
             train_loader=train_loader,
             val_loader=val_loader,
-            # epochs argument might be handled by trainer using config['epochs']
+            epochs=args.epochs  # Explicitly pass epochs
         )
         
         # --- Results ---
-        print("\nTraining finished!")
+        logger.info("Training finished!")
         
         best_epoch = training_history.get('best_epoch', 'N/A')
         best_metrics = training_history.get('best_val_metrics', {})
         
-        print(f"Best model checkpoint saved from epoch: {best_epoch}")
-        print(f"Best validation metrics ({args.early_stopping_metric}):")
+        logger.info(f"Best model checkpoint saved from epoch: {best_epoch}")
+        logger.info(f"Best validation metrics ({args.early_stopping_metric}):")
         for metric, value in best_metrics.items():
-             # Format floats nicely
-             if isinstance(value, float):
-                 print(f"  {metric}: {value:.4f}")
-             else:
-                 print(f"  {metric}: {value}")
+            if isinstance(value, float):
+                logger.info(f"  {metric}: {value:.4f}")
+            else:
+                logger.info(f"  {metric}: {value}")
 
-        # Optional: Generate final plot if trainer supports it
+        # Generate final plot if available
         if hasattr(trainer, 'plot_training_trajectory'):
-            print("Generating final training trajectory plot...")
-            trainer.plot_training_trajectory()
+            logger.info("Generating final training trajectory plot...")
+            try:
+                trainer.plot_training_trajectory()
+                logger.info(f"Plot saved to {trainer.log_dir}")
+            except Exception as plot_error:
+                logger.warning(f"Failed to generate plot: {plot_error}")
 
-        print(f"\nCheckpoints saved to: {os.path.join(trainer.log_dir, 'checkpoints')}")
-        print(f"Visualizations/Logs saved to: {trainer.log_dir}")
+        logger.info(f"Checkpoints saved to: {os.path.join(trainer.log_dir, 'checkpoints')}")
+        logger.info(f"Logs saved to: {trainer.log_dir}")
+        
+        # Save final path to best model for easy reference
+        best_model_path = os.path.join(trainer.log_dir, 'checkpoints', 'best_model.pt')
+        with open(os.path.join(trainer.log_dir, 'best_model_path.txt'), 'w') as f:
+            f.write(best_model_path)
+        logger.info(f"Best model path saved to {os.path.join(trainer.log_dir, 'best_model_path.txt')}")
 
+    except KeyboardInterrupt:
+        logger.info("Training interrupted by user")
+        # Save checkpoint on interrupt
+        trainer.save_checkpoint(is_best=False, filename="interrupt_checkpoint.pt")
+        logger.info(f"Interrupt checkpoint saved to {os.path.join(trainer.log_dir, 'checkpoints', 'interrupt_checkpoint.pt')}")
+        
     except Exception as e:
-         print(f"\nAn error occurred during training: {e}")
-         import traceback
-         traceback.print_exc()
-         sys.exit(1) # Exit with error code
+        logger.error(f"An error occurred during training: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)  # Exit with error code
 
 if __name__ == "__main__":
     main()
