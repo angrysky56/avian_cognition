@@ -14,8 +14,18 @@ import numpy as np
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 
-from .base_trainer import CognitiveTrainer
-from src.modules.bayesian import generate_bayesian_training_data
+# Fix relative import to absolute import
+import sys
+import os
+
+# Add project root to path if running as script
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+# Use absolute import instead of relative
+from training.base_trainer import CognitiveTrainer
+from src.modules.bayesian import kl_divergence_loss
 
 
 class BayesianInferenceTrainer(CognitiveTrainer):
@@ -105,30 +115,47 @@ class BayesianInferenceTrainer(CognitiveTrainer):
         # Default to the provided model
         return model
         
-    def _generate_training_batch(self, batch_size, seq_len, num_hypotheses=3):
+    def _process_batch(self, batch):
         """
-        Create synthetic Bayesian reasoning tasks.
-        
-        Generates sequences of evidence and corresponding ground-truth
-        posterior probabilities for training the belief updating mechanism.
+        Process a batch of real data for Bayesian training.
         
         Args:
-            batch_size: Number of tasks to generate
-            seq_len: Length of evidence sequences
-            num_hypotheses: Number of hypotheses to distinguish
+            batch: Dictionary containing sequence data and posteriors
             
         Returns:
-            evidence_sequences: Generated evidence sequences
+            evidence_sequences: Evidence sequences tensor
             posterior_probs: Ground-truth posterior probabilities
         """
-        return generate_bayesian_training_data(
-            num_samples=batch_size,
-            num_hypotheses=num_hypotheses,
-            sequence_length=seq_len,
-            device=self.device
-        )
+        # Extract sequences and posteriors from the data batch
+        # Expected keys: 'sequences' and 'posteriors'
+        if isinstance(batch, dict):
+            # Format from Hugging Face datasets or custom loader
+            evidence_sequences = batch.get('sequences', batch.get('evidence'))
+            posterior_probs = batch.get('posteriors')
+        elif isinstance(batch, (list, tuple)) and len(batch) == 2:
+            # Tuple format (sequences, posteriors)
+            evidence_sequences, posterior_probs = batch
+        elif hasattr(batch, 'sequences') and hasattr(batch, 'posteriors'):
+            # Object with attributes
+            evidence_sequences = batch.sequences
+            posterior_probs = batch.posteriors
+        else:
+            raise ValueError("Unsupported batch format. Expected dict with 'sequences'/'posteriors' keys "
+                            "or tuple/list with (sequences, posteriors)")
         
-    def train_epoch(self, train_loader=None):
+        # Move to device if needed
+        evidence_sequences = evidence_sequences.to(self.device)
+        posterior_probs = posterior_probs.to(self.device)
+        
+        # Ensure correct dimensions: [seq_len, batch_size, feature_dim]
+        if evidence_sequences.dim() == 3 and evidence_sequences.shape[0] != min(evidence_sequences.shape):
+            # If shape is [batch_size, seq_len, feature_dim], transpose
+            evidence_sequences = evidence_sequences.transpose(0, 1)
+            posterior_probs = posterior_probs.transpose(0, 1)
+            
+        return evidence_sequences, posterior_probs
+        
+    def train_epoch(self, train_loader):
         """
         Conduct a single evolutionary cycle for belief updating calibration.
         
@@ -137,12 +164,14 @@ class BayesianInferenceTrainer(CognitiveTrainer):
         capacity to perform Bayesian inference.
         
         Args:
-            train_loader: Optional iterator through training examples
-                         (if None, generate synthetic data)
+            train_loader: DataLoader containing real training examples
             
         Returns:
             metrics: Quantified aspects of Bayesian reasoning development
         """
+        if train_loader is None:
+            raise ValueError("train_loader is required. Synthetic data generation is no longer supported.")
+            
         # Set to training mode
         self.model.train()
         if self.backbone is not None:
@@ -157,33 +186,10 @@ class BayesianInferenceTrainer(CognitiveTrainer):
         total_samples = 0
         total_correct = 0
         
-        # Determine number of batches
-        if train_loader is not None:
-            num_batches = len(train_loader)
-        else:
-            # Default number of synthetic batches
-            num_batches = self.config.get('synthetic_batches', 100)
-            
         # Evolutionary iteration
-        for batch_idx in tqdm(range(num_batches), desc=f"Epoch {self.epoch}"):
-            # Either use provided data or generate synthetic tasks
-            if train_loader is not None:
-                batch = next(iter(train_loader))
-                evidence_sequences = batch['evidence'].to(self.device)
-                posterior_probs = batch['posterior'].to(self.device)
-            else:
-                # Randomly select sequence length from range
-                seq_len = np.random.randint(
-                    self.sequence_lengths[0],
-                    self.sequence_lengths[1] + 1
-                )
-                
-                # Generate synthetic Bayesian tasks
-                batch_size = self.config.get('batch_size', 32)
-                num_hypotheses = self.config.get('num_hypotheses', 3)
-                evidence_sequences, posterior_probs = self._generate_training_batch(
-                    batch_size, seq_len, num_hypotheses
-                )
+        for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {self.epoch}")):
+            # Process the batch to get evidence sequences and posterior probabilities
+            evidence_sequences, posterior_probs = self._process_batch(batch)
             
             # Get dimensions
             seq_len, batch_size, feature_dim = evidence_sequences.shape
@@ -271,17 +277,19 @@ class BayesianInferenceTrainer(CognitiveTrainer):
         
         return metrics
         
-    def validate(self, val_loader=None):
+    def validate(self, val_loader):
         """
         Evaluate current belief updating calibration on validation ecosystem.
         
         Args:
-            val_loader: Optional iterator through validation examples
-                       (if None, generate synthetic data)
+            val_loader: DataLoader containing real validation examples
             
         Returns:
             metrics: Quantified aspects of Bayesian reasoning calibration
         """
+        if val_loader is None:
+            raise ValueError("val_loader is required. Synthetic data generation is no longer supported.")
+            
         # Set to evaluation mode
         self.model.eval()
         if self.backbone is not None:
@@ -300,31 +308,22 @@ class BayesianInferenceTrainer(CognitiveTrainer):
         belief_trajectories = []
         ground_truth_trajectories = []
         
-        # Determine number of batches
-        if val_loader is not None:
-            num_batches = min(len(val_loader), self.config.get('val_batches', 10))
-        else:
-            # Default number of synthetic batches
-            num_batches = self.config.get('val_batches', 10)
+        # Limit number of batches for validation if configured
+        max_val_batches = self.config.get('val_batches', None)
+        val_loader_iter = iter(val_loader)
+        num_batches = len(val_loader) if max_val_batches is None else min(len(val_loader), max_val_batches)
             
         # Evaluation without gradient tracking
         with torch.no_grad():
             for batch_idx in tqdm(range(num_batches), desc="Validation"):
-                # Either use provided data or generate synthetic tasks
-                if val_loader is not None:
-                    batch = next(iter(val_loader))
-                    evidence_sequences = batch['evidence'].to(self.device)
-                    posterior_probs = batch['posterior'].to(self.device)
-                else:
-                    # Fix sequence length for consistent validation
-                    seq_len = self.sequence_lengths[1]  # Use max length
+                # Get batch from val_loader
+                try:
+                    batch = next(val_loader_iter)
+                except StopIteration:
+                    break
                     
-                    # Generate synthetic Bayesian tasks
-                    batch_size = self.config.get('batch_size', 32)
-                    num_hypotheses = self.config.get('num_hypotheses', 3)
-                    evidence_sequences, posterior_probs = self._generate_training_batch(
-                        batch_size, seq_len, num_hypotheses
-                    )
+                # Process batch to get evidence sequences and posterior probabilities
+                evidence_sequences, posterior_probs = self._process_batch(batch)
                 
                 # Get dimensions
                 seq_len, batch_size, feature_dim = evidence_sequences.shape
@@ -415,62 +414,80 @@ class BayesianInferenceTrainer(CognitiveTrainer):
         
         return metrics
         
-    def _plot_belief_updating(self):
+    def _plot_belief_updating(self, val_loader=None):
         """
-        Visualize the belief updating process on a test problem.
+        Visualize the belief updating process on a validation sample.
         
         Creates a demonstration of the Bayesian module's belief updating
-        mechanism on a single test problem, showing how beliefs evolve
+        mechanism on a real validation example, showing how beliefs evolve
         as new evidence arrives.
+        
+        Args:
+            val_loader: Optional validation DataLoader to use for visualization
         """
+        # Ensure we have validation data
+        if val_loader is None:
+            # Skip visualization if no validation data is available
+            self.logger.warning("Skipping belief updating visualization: no validation data provided")
+            return
+            
         # Set to evaluation mode
         self.model.eval()
         
         # Isolate Bayesian module
         bayesian_module = self._extract_bayesian_module(self.model)
         
-        # Create test problem
-        seq_len = 10  # Fixed length for visualization
-        num_hypotheses = 3
-        evidence_sequences, posterior_probs = self._generate_training_batch(
-            batch_size=1, seq_len=seq_len, num_hypotheses=num_hypotheses
-        )
-        
-        # Track belief evolution
-        belief_trajectory = []
-        ground_truth_trajectory = []
-        
-        # Process sequence without gradients
-        with torch.no_grad():
-            belief_state = None
+        # Get a sample from validation data
+        try:
+            batch = next(iter(val_loader))
+            evidence_sequences, posterior_probs = self._process_batch(batch)
+        except (StopIteration, ValueError, TypeError, IndexError) as e:
+            self.logger.warning(f"Failed to get validation sample for visualization: {e}")
+            return
             
-            for t in range(seq_len):
-                # Current evidence
-                evidence_t = evidence_sequences[t]
+        # Take only the first sequence for visualization
+        if evidence_sequences.size(1) > 0:  # Ensure we have at least one sequence
+            # Extract dimensions
+            seq_len = evidence_sequences.size(0)
+            num_hypotheses = posterior_probs.size(2)
+            
+            # Track belief evolution
+            belief_trajectory = []
+            ground_truth_trajectory = []
+            
+            # Process sequence without gradients
+            with torch.no_grad():
+                belief_state = None
                 
-                # Ground truth posterior
-                true_posterior_t = posterior_probs[t]
-                
-                # Update belief state
-                belief_state, _ = bayesian_module(evidence_t, belief_state)
-                
-                # Convert to probabilities
-                if hasattr(bayesian_module, 'belief_activation') and isinstance(bayesian_module.belief_activation, nn.Tanh):
-                    belief_probs = (belief_state + 1) / 2
-                else:
-                    belief_probs = F.softmax(belief_state[:, :num_hypotheses], dim=1)
-                
-                # Record beliefs
-                belief_trajectory.append(belief_probs[0].cpu().numpy())
-                ground_truth_trajectory.append(true_posterior_t[0].cpu().numpy())
-        
-        # Create visualization
-        self._plot_belief_trajectory(
-            belief_trajectory,
-            ground_truth_trajectory,
-            title=f"Belief Updating (Epoch {self.epoch})",
-            filename=f"belief_trajectory_epoch_{self.epoch}.png"
-        )
+                for t in range(seq_len):
+                    # Current evidence (first item in batch)
+                    evidence_t = evidence_sequences[t, 0:1]  # Keep batch dimension
+                    
+                    # Ground truth posterior (first item in batch)
+                    true_posterior_t = posterior_probs[t, 0:1]
+                    
+                    # Update belief state
+                    belief_state, _ = bayesian_module(evidence_t, belief_state)
+                    
+                    # Convert to probabilities
+                    if hasattr(bayesian_module, 'belief_activation') and isinstance(bayesian_module.belief_activation, nn.Tanh):
+                        belief_probs = (belief_state + 1) / 2
+                    else:
+                        belief_probs = F.softmax(belief_state[:, :num_hypotheses], dim=1)
+                    
+                    # Record beliefs
+                    belief_trajectory.append(belief_probs[0].cpu().numpy())
+                    ground_truth_trajectory.append(true_posterior_t[0].cpu().numpy())
+            
+            # Create visualization
+            self._plot_belief_trajectory(
+                belief_trajectory,
+                ground_truth_trajectory,
+                title=f"Belief Updating (Epoch {self.epoch})",
+                filename=f"belief_trajectory_epoch_{self.epoch}.png"
+            )
+        else:
+            self.logger.warning("Cannot visualize belief updating: empty batch")
         
     def _plot_belief_trajectory(self, belief_trajectory, ground_truth_trajectory, title=None, filename=None):
         """

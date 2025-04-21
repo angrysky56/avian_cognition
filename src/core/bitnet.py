@@ -16,27 +16,28 @@ from typing import Optional, Tuple
 
 class BitLinear(nn.Module):
     """
-    Custom Linear layer implementing 1-bit weight quantization (BitNet style).
+    Custom Linear layer implementing ternary weight quantization (BitNet b1.58 style).
     
-    During the forward pass, weights are binarized to +1/-1. A scaling factor,
-    calculated from the full-precision weights, is applied to maintain output
-    magnitude. Full-precision weights are retained internally for gradient 
-    updates during training.
+    During the forward pass, weights are quantized to {-1, 0, +1} using a threshold
+    of 0.5 * abs_mean (absmean quantization). A scaling factor calculated from the 
+    full-precision weights is applied to maintain output magnitude. Full-precision 
+    weights are retained internally for gradient updates during training.
 
     Attributes:
         in_features (int): Size of each input sample.
         out_features (int): Size of each output sample.
         weight (nn.Parameter): Trainable full-precision weights. 
                                Shape: [out_features, in_features].
-        scale (torch.Tensor): Non-trainable buffer holding the scaling factor, 
-                              recalculated each forward pass based on `weight`.
+        scale_factor (float): Controls the threshold for ternary quantization.
+                              Default 0.5 per the b1.58 BitNet paper.
         bias (nn.Parameter, optional): Trainable bias term. Shape: [out_features].
     """
     
     def __init__(self, 
                  in_features: int, 
                  out_features: int, 
-                 bias: bool = True, 
+                 bias: bool = True,
+                 scale_factor: float = 0.5,
                  device: Optional[torch.device] = None, 
                  dtype: Optional[torch.dtype] = None) -> None:
         """
@@ -46,6 +47,7 @@ class BitLinear(nn.Module):
             in_features (int): Number of input features.
             out_features (int): Number of output features.
             bias (bool): If True, adds a learnable bias to the output. Default: True.
+            scale_factor (float): Scaling factor for the threshold. Default: 0.5.
             device (Optional[torch.device]): The desired device of the parameters. 
                                              If None, uses default device.
             dtype (Optional[torch.dtype]): The desired floating point type of the parameters. 
@@ -55,13 +57,10 @@ class BitLinear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
+        self.scale_factor = scale_factor
         
         # Full-precision weights stored as Parameter for training
         self.weight = nn.Parameter(torch.empty((out_features, in_features), **factory_kwargs))
-        
-        # Scaling factor (calculated dynamically in forward pass) stored as buffer
-        # Initialize scale to 1.0
-        self.register_buffer('scale', torch.ones(1, device=device, dtype=dtype if dtype else torch.float32)) 
         
         # Optional bias term
         if bias:
@@ -89,7 +88,7 @@ class BitLinear(nn.Module):
         
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """
-        Perform forward pass using binarized weights and scaling.
+        Perform forward pass using ternary weights {-1, 0, +1} and scaling.
         
         Args:
             input (torch.Tensor): Input tensor. 
@@ -106,26 +105,38 @@ class BitLinear(nn.Module):
             # *before* the forward pass begins (e.g., model.to(device)). 
             # This check is a fallback.
 
-        # --- BitNet Quantization Step ---
-        # 1. Binarize weights: Use sign() to get +1, -1, or 0 (for zero weights).
-        #    Using sign() is common in BitNet implementations.
-        binary_weight = torch.sign(self.weight) 
-        # Alternative: Binarize around 0 (STE - Straight-Through Estimator might be needed for training stability)
-        # binary_weight = ((self.weight > 0).float() - 0.5) * 2 
+        # --- BitNet b1.58 Ternary Quantization Steps ---
         
-        # 2. Calculate scaling factor (beta in some papers): Average absolute value of full-precision weights.
-        #    This helps maintain the output magnitude similar to a full-precision layer.
-        #    Recalculated each forward pass based on the *current* full-precision weights.
-        #    Using detach() as scale calculation shouldn't contribute to gradients w.r.t scale itself.
-        current_scale = self.weight.abs().mean().detach()
-        # Update buffer if needed (e.g., for logging, though not strictly necessary if only used here)
-        # self.scale.fill_(current_scale) 
+        # 1. Calculate scaling factor: Average absolute value of weights (per output dimension)
+        abs_mean = torch.mean(torch.abs(self.weight), dim=1, keepdim=True).detach()
         
-        # 3. Apply scaling to binarized weights
-        scaled_binary_weight = binary_weight * current_scale
-
-        # 4. Perform linear operation using the scaled binary weights
-        output = F.linear(input, scaled_binary_weight, self.bias)
+        # 2. Calculate threshold for ternary quantization (typically 0.5 * abs_mean per the paper)
+        threshold = self.scale_factor * abs_mean
+        
+        # 3. Perform ternary quantization:
+        #    - Values with magnitude > threshold become +1 or -1 (based on sign)
+        #    - Values with magnitude <= threshold become 0
+        weight_abs = torch.abs(self.weight)
+        ternary_weight = torch.zeros_like(self.weight)
+        ternary_weight = torch.where(
+            weight_abs > threshold,
+            torch.sign(self.weight),
+            ternary_weight
+        )
+        
+        if self.training:
+            # Use straight-through estimator (STE) for gradients during training
+            # Forward: use quantized weights, Backward: use original weight gradients
+            with torch.no_grad():
+                ternary_scaled = ternary_weight * abs_mean
+                # Detach the quantized weights to separate the gradient flow
+                quantized_weight = self.weight - self.weight.detach() + ternary_scaled.detach()
+        else:
+            # During inference, directly use the ternary weights with scaling
+            quantized_weight = ternary_weight * abs_mean
+        
+        # 4. Perform linear operation using the quantized weights
+        output = F.linear(input, quantized_weight, self.bias)
         
         return output
     

@@ -14,7 +14,17 @@ import numpy as np
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 
-from .base_trainer import CognitiveTrainer
+# Fix relative import to absolute import
+import sys
+import os
+
+# Add project root to path if running as script
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+# Use absolute import instead of relative
+from training.base_trainer import CognitiveTrainer
 from src.modules.metacognition import expected_calibration_error, plot_reliability_diagram
 
 
