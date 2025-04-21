@@ -3,10 +3,10 @@
 # test_mamba_import.py - Test if mamba_ssm can be imported correctly
 
 try:
-    from mamba_ssm import Mamba, MambaConfig
+    from mamba_ssm import Mamba
     print("SUCCESS: mamba_ssm successfully imported.")
     print(f"Mamba: {Mamba}")
-    print(f"MambaConfig: {MambaConfig}")
+    # print(f"MambaConfig: {MambaConfig}")
 except ImportError as e:
     print(f"FAIL: Could not import mamba_ssm: {e}")
     
