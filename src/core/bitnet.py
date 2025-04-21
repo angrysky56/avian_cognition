@@ -28,7 +28,7 @@ class BitLinear(nn.Module):
         bias: Optional bias parameter
     """
     
-    def __init__(self, in_features, out_features, bias=True):
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -64,6 +64,10 @@ class BitLinear(nn.Module):
         Returns:
             output: Output tensor of shape [batch_size, out_features]
         """
+        # Move to input device if necessary
+        if input.device != self.weight.device:
+            self.to(input.device)
+            
         # Binary quantization
         binary_weight = torch.sign(self.weight)
         
@@ -93,7 +97,7 @@ class BitGRUCell(nn.Module):
         new_gate: BitLinear layer for candidate activation
     """
     
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, input_size, hidden_size, device=None, dtype=None):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -118,6 +122,10 @@ class BitGRUCell(nn.Module):
         Returns:
             h_new: Updated hidden state [batch_size, hidden_size]
         """
+        # Move to input device if necessary
+        if input.device != self.reset_gate.weight.device:
+            self.to(input.device)
+            
         if hidden is None:
             hidden = torch.zeros(input.size(0), self.hidden_size, device=input.device)
             
@@ -138,12 +146,13 @@ class BitGRUCell(nn.Module):
         return h_new
 
 
-def convert_linear_to_bit_linear(module):
+def convert_linear_to_bit_linear(module, device=None):
     """
     Recursively converts all nn.Linear layers in a module to BitLinear.
     
     Args:
         module: PyTorch module to convert
+        device: Optional device to place BitLinear layers on
         
     Returns:
         module: Module with all linear layers converted to BitLinear
@@ -158,11 +167,15 @@ def convert_linear_to_bit_linear(module):
                 if child.bias is not None:
                     bit_linear.bias.copy_(child.bias)
                     
+            # Move to device if specified
+            if device is not None:
+                bit_linear = bit_linear.to(device)
+                    
             # Replace module
             setattr(module, name, bit_linear)
         else:
             # Recursively convert children
-            convert_linear_to_bit_linear(child)
+            convert_linear_to_bit_linear(child, device=device)
             
     return module
 
@@ -182,7 +195,7 @@ class NALULayer(nn.Module):
         M: Weight matrix for multiplication path (in log space)
     """
     
-    def __init__(self, in_features, out_features, eps=1e-7):
+    def __init__(self, in_features, out_features, eps=1e-7, device=None, dtype=None):
         super().__init__()
         
         self.in_features = in_features
@@ -213,6 +226,10 @@ class NALULayer(nn.Module):
         Returns:
             y: Output tensor of shape [batch_size, out_features]
         """
+        # Move to input device if necessary
+        if x.device != self.G.device:
+            self.to(x.device)
+            
         # Gate for add/multiply operation selection
         g = torch.sigmoid(F.linear(x, self.G))
         
@@ -226,37 +243,3 @@ class NALULayer(nn.Module):
         y = g * a + (1 - g) * m
         
         return y
-
-
-def estimate_memory_savings(original_model, bit_model):
-    """
-    Estimates memory savings from BitNet quantization.
-    
-    Args:
-        original_model: Original model with FP32/FP16 weights
-        bit_model: Quantized model with 1-bit weights
-        
-    Returns:
-        savings: Dictionary with memory usage statistics
-    """
-    # Count parameters
-    original_params = sum(p.numel() for p in original_model.parameters())
-    bit_params = sum(p.numel() for p in bit_model.parameters())
-    
-    # Calculate memory usage
-    original_memory_mb = original_params * 4 / (1024 * 1024)  # FP32
-    bit_memory_mb = bit_params / 8 / (1024 * 1024)  # 1-bit
-    
-    # Additional overhead for BitNet (scales, etc.)
-    bit_overhead_mb = sum(p.numel() for p in bit_model.parameters() if not hasattr(p, '_is_binary')) * 4 / (1024 * 1024)
-    
-    total_bit_memory_mb = bit_memory_mb + bit_overhead_mb
-    
-    return {
-        'original_params': original_params,
-        'bit_params': bit_params,
-        'original_memory_mb': original_memory_mb,
-        'bit_memory_mb': total_bit_memory_mb,
-        'compression_ratio': original_memory_mb / total_bit_memory_mb,
-        'memory_reduction_percent': (1 - total_bit_memory_mb / original_memory_mb) * 100
-    }

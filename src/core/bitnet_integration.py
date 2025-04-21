@@ -18,12 +18,23 @@ if os.path.exists(BITNET_REPO_PATH) and BITNET_REPO_PATH not in sys.path:
 
 # Import BitNet functionality if available
 try:
-    import bitnet_cpp
-    BITNET_AVAILABLE = True
-    print("Successfully imported BitNet library")
+    # Try importing from our own module first
+    from src.core.bitnet_cpp import BitNetModel, check_bitnet_build
+    BITNET_AVAILABLE = check_bitnet_build()
+    if BITNET_AVAILABLE:
+        print("Successfully imported BitNet library")
+    else:
+        print("Warning: BitNet binary not found. Using fallback implementation.")
+        BITNET_AVAILABLE = False
 except ImportError:
-    BITNET_AVAILABLE = False
-    print("Warning: BitNet library not found. Using fallback implementation.")
+    # Fallback to importing directly
+    try:
+        import bitnet_cpp
+        BITNET_AVAILABLE = True
+        print("Successfully imported BitNet library")
+    except ImportError:
+        BITNET_AVAILABLE = False
+        print("Warning: BitNet library not found. Using fallback implementation.")
 
 class BitNetWrapper:
     """
@@ -49,7 +60,10 @@ class BitNetWrapper:
         # Try to load BitNet model if available
         if BITNET_AVAILABLE and model_path and os.path.exists(model_path):
             try:
-                self.model = bitnet_cpp.BitNetModel(model_path)
+                if 'BitNetModel' in globals():
+                    self.model = BitNetModel(model_path)
+                else:
+                    self.model = bitnet_cpp.BitNetModel(model_path)
                 print(f"Successfully loaded BitNet model from {model_path}")
             except Exception as e:
                 print(f"Error loading BitNet model: {e}")
@@ -139,6 +153,8 @@ def apply_bitnet_quantization(model, bitnet_model=None):
     if bitnet_model is None:
         bitnet_model = get_bitnet_model()
     
+    print(f"Applying BitNet quantization to model using {'native' if BITNET_AVAILABLE else 'fallback'} implementation")
+    
     # Apply quantization to cognitive modules
     if hasattr(model, 'metacognition_module'):
         model.metacognition_module = bitnet_model.quantize_module(model.metacognition_module)
@@ -159,3 +175,41 @@ def apply_bitnet_quantization(model, bitnet_model=None):
         print(f"Warning: Could not quantize backbone: {e}")
     
     return model
+
+
+def estimate_model_size(model, with_quantization=True):
+    """
+    Estimate the model size with and without quantization.
+    
+    Args:
+        model: The PyTorch model
+        with_quantization: Whether to estimate with BitNet quantization
+        
+    Returns:
+        size_info: Dictionary with size information
+    """
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    
+    # Estimate memory in different formats
+    fp32_size_mb = total_params * 4 / (1024 * 1024)  # 4 bytes per parameter
+    fp16_size_mb = total_params * 2 / (1024 * 1024)  # 2 bytes per parameter
+    int8_size_mb = total_params * 1 / (1024 * 1024)  # 1 byte per parameter
+    bit1_size_mb = total_params / 8 / (1024 * 1024)  # 1/8 byte per parameter
+    
+    # Create result dictionary
+    result = {
+        'total_parameters': total_params,
+        'fp32_size_mb': fp32_size_mb,
+        'fp16_size_mb': fp16_size_mb,
+        'int8_size_mb': int8_size_mb,
+        'bit1_size_mb': bit1_size_mb,
+    }
+    
+    # Calculate compression ratios
+    if with_quantization:
+        result['compression_ratio_vs_fp32'] = fp32_size_mb / bit1_size_mb
+        result['compression_ratio_vs_fp16'] = fp16_size_mb / bit1_size_mb
+        result['compression_ratio_vs_int8'] = int8_size_mb / bit1_size_mb
+    
+    return result
