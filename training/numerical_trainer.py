@@ -148,9 +148,14 @@ class NumericalCompetenceTrainer(CognitiveTrainer):
             
             # For division, ensure clean division (when possible)
             if operation == 'divide':
-                if a > 0 and np.random.random() < 0.8:  # 80% clean division
-                    b = np.random.randint(1, min(a, max_val // 2))
-                    b = b * (a // b) if a // b > 0 else b  # Make a divisible by b
+                if a > 1 and np.random.random() < 0.8:  # 80% clean division
+                    # Ensure valid range for randint (low < high)
+                    high_val = min(a, max_val // 2)
+                    if high_val > 1:
+                        b = np.random.randint(1, high_val)
+                        b = b * (a // b) if a // b > 0 else b  # Make a divisible by b
+                    else:
+                        b = 1  # Default to 1 if no valid range
                 else:
                     b = max(1, np.random.randint(min_val, max_val))  # Avoid division by zero
             else:
@@ -184,16 +189,16 @@ class NumericalCompetenceTrainer(CognitiveTrainer):
         scaling_factor = 1.0 / max(1.0, max_magnitude)
         
         for i, (a, b) in enumerate(operands):
-            # Encode in first few dimensions (simple implementation)
-            h1[i, 0] = a * scaling_factor
-            h1[i, 1] = (a // 100) * scaling_factor  # Hundreds place
-            h1[i, 2] = ((a % 100) // 10) * scaling_factor  # Tens place
-            h1[i, 3] = (a % 10) * scaling_factor  # Ones place
+            # Convert to Python floats first to avoid numpy dtype issues with CUDA tensors
+            h1[i, 0] = float(a) * float(scaling_factor)
+            h1[i, 1] = float(a // 100) * float(scaling_factor)  # Hundreds place
+            h1[i, 2] = float((a % 100) // 10) * float(scaling_factor)  # Tens place
+            h1[i, 3] = float(a % 10) * float(scaling_factor)  # Ones place
             
-            h2[i, 0] = b * scaling_factor
-            h2[i, 1] = (b // 100) * scaling_factor  # Hundreds place
-            h2[i, 2] = ((b % 100) // 10) * scaling_factor  # Tens place
-            h2[i, 3] = (b % 10) * scaling_factor  # Ones place
+            h2[i, 0] = float(b) * float(scaling_factor)
+            h2[i, 1] = float(b // 100) * float(scaling_factor)  # Hundreds place
+            h2[i, 2] = float((b % 100) // 10) * float(scaling_factor)  # Tens place
+            h2[i, 3] = float(b % 10) * float(scaling_factor)  # Ones place
             
         # Encode operation
         op_idx = self.operations.index(operation)
@@ -230,10 +235,11 @@ class NumericalCompetenceTrainer(CognitiveTrainer):
         # Check if within tolerance
         within_tolerance = abs_errors <= rel_tolerance
         
-        # Calculate accuracy
-        accuracy = within_tolerance.float().mean().item()
+        # Calculate accuracy - detach to avoid gradient tracking
+        accuracy = within_tolerance.float().mean().detach().item()
         
-        return accuracy, abs_errors.cpu().numpy()
+        # Detach before converting to numpy to avoid the runtime error
+        return accuracy, abs_errors.detach().cpu().numpy()
         
     def train_epoch(self, train_loader=None):
         """
@@ -284,10 +290,18 @@ class NumericalCompetenceTrainer(CognitiveTrainer):
             
             # Either use provided data or generate synthetic problems
             if train_loader is not None:
-                batch = next(iter(train_loader))
-                h1, h2, h_op = batch['operands']
-                targets = batch['results'].to(self.device)
-                operands = batch.get('original_operands', None)
+                try:
+                    batch = next(iter(train_loader))
+                    h1, h2, h_op = batch['operands']
+                    targets = batch['results']
+                    operands = batch.get('original_operands', None)
+                except Exception as e:
+                    print(f"Error loading batch from data loader: {e}")
+                    print("Falling back to synthetic data generation")
+                    # Generate synthetic batch as fallback
+                    (h1, h2, h_op), targets, operands = self._generate_batch(
+                        batch_size, operation, train_range
+                    )
             else:
                 # Generate synthetic batch
                 (h1, h2, h_op), targets, operands = self._generate_batch(
@@ -297,14 +311,18 @@ class NumericalCompetenceTrainer(CognitiveTrainer):
             # Reset gradient pathways
             self.optimizer.zero_grad()
             
-            # Forward pass through numerical module
-            result_hidden, op_weights = numerical_module(h1, h2, h_op)
-            
-            # Decode result (simplified extraction from first dimension)
-            max_magnitude = max(abs(t.item()) for t in targets.view(-1))
-            scaling_factor = 1.0 / max(1.0, max_magnitude)
-            
-            predictions = result_hidden[:, 0] / scaling_factor
+            # Forward pass through numerical module with decoder
+            if hasattr(self.model, 'numerical_module'):
+                # Model with decoder head
+                predictions, result_hidden, op_weights = self.model(h1, h2, h_op)
+            else:
+                # Original model without decoder head
+                result_hidden, op_weights = numerical_module(h1, h2, h_op)
+                
+                # Fall back to the original approach if necessary
+                max_magnitude = max(abs(t.item()) for t in targets.view(-1))
+                scaling_factor = 1.0 / max(1.0, max_magnitude)
+                predictions = result_hidden[:, 0:1] / scaling_factor
             
             # Calculate loss
             loss = self.criterion(predictions.view(-1, 1), targets)
@@ -409,50 +427,118 @@ class NumericalCompetenceTrainer(CognitiveTrainer):
                 scenario_operation_correct = {op: 0 for op in self.operations}
                 scenario_operation_total = {op: 0 for op in self.operations}
                 
-                # Test each operation
-                for operation in self.operations:
-                    for _ in range(test_batches):
-                        # Generate synthetic batch
-                        (h1, h2, h_op), targets, operands = self._generate_batch(
-                            batch_size, operation, value_range
-                        )
-                        
-                        # Forward pass through numerical module
-                        result_hidden, op_weights = numerical_module(h1, h2, h_op)
-                        
-                        # Decode result (simplified extraction from first dimension)
-                        max_magnitude = max(abs(t.item()) for t in targets.view(-1))
-                        scaling_factor = 1.0 / max(1.0, max_magnitude)
-                        
-                        predictions = result_hidden[:, 0] / scaling_factor
-                        
-                        # Calculate loss
-                        loss = self.criterion(predictions.view(-1, 1), targets)
-                        
-                        # Accumulate metrics
-                        scenario_loss += loss.item() * batch_size
-                        scenario_samples += batch_size
-                        
-                        # Evaluate accuracy for this operation
-                        accuracy, errors = self._evaluate_accuracy(predictions.view(-1, 1), targets)
-                        scenario_operation_correct[operation] += accuracy * batch_size
-                        scenario_operation_total[operation] += batch_size
-                        
-                        # Log some examples (first batch only)
-                        if _ == 0 and scenario_name == 'extrapolation':
-                            examples = []
-                            for i in range(min(5, batch_size)):
-                                if operands:
-                                    a, b = operands[i]
-                                    pred = predictions[i].item()
-                                    targ = targets[i].item()
-                                    error = abs(pred - targ)
-                                    examples.append((a, b, pred, targ, error))
+                # Handle validation with real data if provided
+                if val_loader is not None and scenario_name == 'validation':
+                    # Try to use provided validation data
+                    try:
+                        for batch_idx in range(len(val_loader)):
+                            try:
+                                batch = next(iter(val_loader))
+                                h1, h2, h_op = batch['operands']
+                                targets = batch['results']
+                                
+                                # Forward pass with decoder
+                                if hasattr(self.model, 'numerical_module'):
+                                    # Model with decoder head
+                                    predictions, result_hidden, op_weights = self.model(h1, h2, h_op)
+                                else:
+                                    # Original model without decoder head
+                                    result_hidden, op_weights = numerical_module(h1, h2, h_op)
+                                    
+                                    # Fall back to the original approach if necessary
+                                    max_magnitude = max(abs(t.item()) for t in targets.view(-1))
+                                    scaling_factor = 1.0 / max(1.0, max_magnitude)
+                                    predictions = result_hidden[:, 0:1] / scaling_factor
+                                
+                                # Calculate loss
+                                loss = self.criterion(predictions.view(-1, 1), targets)
+                                
+                                # Accumulate metrics
+                                current_batch_size = h1.size(0)
+                                scenario_loss += loss.item() * current_batch_size
+                                scenario_samples += current_batch_size
+                                
+                                # Try to determine operation from h_op one-hot encoding
+                                try:
+                                    operation_idx = torch.argmax(h_op[0]).item()
+                                    if operation_idx < len(self.operations):
+                                        operation = self.operations[operation_idx]
+                                    else:
+                                        # Default to first operation if index is out of bounds
+                                        operation = self.operations[0]
+                                except:
+                                    # Default to first operation if there's any issue
+                                    operation = self.operations[0]
+                                
+                                # Evaluate accuracy for this operation
+                                accuracy, _ = self._evaluate_accuracy(predictions.view(-1, 1), targets)
+                                scenario_operation_correct[operation] += accuracy * current_batch_size
+                                scenario_operation_total[operation] += current_batch_size
+                            except StopIteration:
+                                # Re-initialize iterator if needed
+                                break
+                    except Exception as e:
+                        print(f"Error during validation with real data: {e}")
+                        print("Falling back to synthetic data for validation")
+                        # Continue with synthetic data generation below
+                        use_synthetic = True
+                    else:
+                        # Skip synthetic data generation if real data was used successfully
+                        use_synthetic = False
+                else:
+                    # No real data provided, use synthetic
+                    use_synthetic = True
+                    
+                # Generate synthetic data if needed
+                if scenario_name == 'extrapolation' or use_synthetic:
+                    # Test each operation with synthetic data
+                    for operation in self.operations:
+                        for batch_i in range(test_batches):
+                            # Generate synthetic batch
+                            (h1, h2, h_op), targets, operands = self._generate_batch(
+                                batch_size, operation, value_range
+                            )
                             
-                            if examples:
-                                self.logger.info(f"Extrapolation examples ({operation}):")
-                                for a, b, pred, targ, error in examples:
-                                    self.logger.info(f"  {a} {operation} {b} = {pred:.2f} (correct: {targ:.2f}, error: {error:.2f})")
+                            # Forward pass with decoder
+                            if hasattr(self.model, 'numerical_module'):
+                                # Model with decoder head
+                                predictions, result_hidden, op_weights = self.model(h1, h2, h_op)
+                            else:
+                                # Original model without decoder head
+                                result_hidden, op_weights = numerical_module(h1, h2, h_op)
+                                
+                                # Fall back to the original approach if necessary
+                                max_magnitude = max(abs(t.item()) for t in targets.view(-1))
+                                scaling_factor = 1.0 / max(1.0, max_magnitude)
+                                predictions = result_hidden[:, 0:1] / scaling_factor
+                            
+                            # Calculate loss
+                            loss = self.criterion(predictions.view(-1, 1), targets)
+                            
+                            # Accumulate metrics
+                            scenario_loss += loss.item() * batch_size
+                            scenario_samples += batch_size
+                            
+                            # Evaluate accuracy for this operation
+                            accuracy, _ = self._evaluate_accuracy(predictions.view(-1, 1), targets)
+                            scenario_operation_correct[operation] += accuracy * batch_size
+                            scenario_operation_total[operation] += batch_size
+                            
+                            # Log some examples (first batch only)
+                            if batch_i == 0 and scenario_name == 'extrapolation':
+                                examples = []
+                                for i in range(min(5, batch_size)):
+                                    if operands:
+                                        a, b = operands[i]
+                                        pred = predictions[i].item()
+                                        targ = targets[i].item()
+                                        error = abs(pred - targ)
+                                        examples.append((a, b, pred, targ, error))
+                                
+                                if examples:
+                                    self.logger.info(f"Extrapolation examples ({operation}):")
+                                    for a, b, pred, targ, error in examples:
+                                        self.logger.info(f"  {a} {operation} {b} = {pred:.2f} (correct: {targ:.2f}, error: {error:.2f})")
                 
                 # Calculate scenario metrics
                 scenario_avg_loss = scenario_loss / scenario_samples if scenario_samples > 0 else 0.0

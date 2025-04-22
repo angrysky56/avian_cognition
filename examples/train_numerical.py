@@ -1,430 +1,760 @@
+#!/usr/bin/env python3
 """
-Numerical Module Training Script (Placeholder)
+Numerical Competence Module Training Script
 
-This script provides a basic framework for training the NumericalModule.
-It uses synthetic data representing simple arithmetic problems (e.g., a + b = c) 
-and attempts to train the module to predict the scalar result 'c'.
+This script trains the Numerical Competence Module, enabling precise arithmetic
+operations that generalize beyond the training distribution. It supports both synthetic
+data generation and loading real data, as well as BitNet quantization for efficient
+inference.
 
-**IMPORTANT:** This requires adding a temporary decoding head to the module 
-during training to predict the scalar result. It also uses highly simplified 
-input representations (random vectors). For practical use, replace the synthetic 
-data with realistic inputs (e.g., hidden states corresponding to numbers and 
-operations from a larger model) and potentially use a more sophisticated 
-loss or task formulation.
+Usage examples:
+    # Train with synthetic data
+    python examples/train_numerical.py --hidden_dim 768 --epochs 50 --mode synthetic
+    
+    # Train with real data
+    python examples/train_numerical.py --train_data_path data/numerical/train_data.pt --val_data_path data/numerical/val_data.pt
+    
+    # Train with BitNet quantization
+    python examples/train_numerical.py --hidden_dim 768 --epochs 50 --quantize --mode synthetic
 """
 
 import os
 import sys
-import torch
 import argparse
+import torch
+import torch.nn as nn
 import numpy as np
-import torch.nn as nn # Needed for nn.MSELoss and nn.Linear
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm # Progress bars
-import time
-import random
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 
 # Add parent directory to path for imports
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Attempt imports
-try:
-    from src.modules.numerical import NumericalModule
-except ImportError:
-    print(f"Error: Failed to import NumericalModule from src.modules.numerical")
-    print(f"Ensure '{PROJECT_ROOT}' is in your Python path and the file exists.")
-    sys.exit(1)
-
-try:
-    from src.core.bitnet import BitLinear, NALULayer # Check availability
-except ImportError:
-     print(f"Warning: Failed to import BitLinear/NALULayer from src.core.bitnet.")
-
-# Placeholder Trainer Class (Includes early stopping and best model saving)
-class PlaceholderTrainer:
-    def __init__(self, model, decoder_head, optimizer, criterion, device, config, experiment_name="NumericalExperiment"):
-        self.model = model
-        self.decoder_head = decoder_head # Specific to this training setup
-        self.optimizer = optimizer
-        self.criterion = criterion
-        self.device = device
-        self.config = config
-        self.experiment_name = experiment_name
-        self.log_dir = os.path.join("logs", self.experiment_name)
-        self.checkpoint_dir = os.path.join(self.log_dir, "checkpoints")
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
-        
-        self.best_metric = float('inf') if config.get('early_stopping_mode', 'min') == 'min' else float('-inf')
-        self.epochs_no_improve = 0
-        self.best_epoch = -1
-        # Store module state and decoder head state separately if needed
-        self.history = {'train_loss': [], 'val_loss': [], 'val_metrics': []} 
-
-    def _save_checkpoint(self, epoch, is_best=False):
-        filename = f"checkpoint_epoch_{epoch+1}.pth"
-        if is_best:
-             filename = "checkpoint_best.pth"
-        filepath = os.path.join(self.checkpoint_dir, filename)
-        # Save both the main module and the temporary decoder head
-        state = {
-            'model_state_dict': self.model.state_dict(),
-            'decoder_head_state_dict': self.decoder_head.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'epoch': epoch,
-            'best_metric': self.best_metric
-        }
-        torch.save(state, filepath)
-
-    def _train_epoch(self, train_loader):
-        self.model.train()
-        self.decoder_head.train() # Train decoder head as well
-        total_loss = 0.0
-        pbar = tqdm(train_loader, desc="Training", leave=False)
-        for batch in pbar:
-            # Assuming batch yields dict {'h1': tensor, 'h2': tensor, 'h_op': tensor, 'target_result': tensor}
-            h1 = batch['h1'].to(self.device)
-            h2 = batch['h2'].to(self.device)
-            h_op = batch['h_op'].to(self.device)
-            target_result = batch['target_result'].to(self.device) # Scalar target
-
-            self.optimizer.zero_grad()
-            
-            # --- Model Forward Pass ---
-            # Get the hidden representation of the result from the numerical module
-            result_hidden, op_weights = self.model(h1, h2, h_op)
-            
-            # --- Decoding and Loss ---
-            # Use the temporary decoder head to predict the scalar result
-            predicted_result = self.decoder_head(result_hidden) # Shape: [batch_size, 1]
-            
-            # Calculate loss between predicted scalar and target scalar
-            loss = self.criterion(predicted_result, target_result) 
-            # --- End Loss ---
-
-            loss.backward()
-            self.optimizer.step()
-            
-            total_loss += loss.item()
-            pbar.set_postfix(loss=loss.item())
-            
-        return total_loss / len(train_loader)
-
-    def _validate_epoch(self, val_loader):
-        self.model.eval()
-        self.decoder_head.eval() # Eval decoder head
-        total_loss = 0.0
-        all_preds = []
-        all_targets = []
-        
-        pbar = tqdm(val_loader, desc="Validation", leave=False)
-        with torch.no_grad():
-            for batch in pbar:
-                h1 = batch['h1'].to(self.device)
-                h2 = batch['h2'].to(self.device)
-                h_op = batch['h_op'].to(self.device)
-                target_result = batch['target_result'].to(self.device)
-
-                result_hidden, _ = self.model(h1, h2, h_op)
-                predicted_result = self.decoder_head(result_hidden)
-                
-                loss = self.criterion(predicted_result, target_result)
-                total_loss += loss.item()
-                
-                all_preds.append(predicted_result.cpu())
-                all_targets.append(target_result.cpu())
-
-        avg_loss = total_loss / len(val_loader)
-        
-        # --- Calculate additional validation metrics ---
-        preds_cat = torch.cat(all_preds, dim=0)
-        targets_cat = torch.cat(all_targets, dim=0)
-        # Example: Mean Absolute Error (MAE)
-        mae = F.l1_loss(preds_cat, targets_cat).item()
-        metrics = {'val_mae': mae} # Define relevant metrics
-        # ---------------------------------------------
-
-        return avg_loss, metrics
-
-    def train(self, train_loader, val_loader):
-        # (Training loop identical to other trainers - see Bayesian or Planning)
-        epochs = self.config.get('epochs', 10)
-        patience = self.config.get('early_stopping_patience', 3)
-        metric_name = self.config.get('early_stopping_metric', 'val_loss') # Could use val_mae
-        metric_mode = self.config.get('early_stopping_mode', 'min')
-        print(f"Starting training for {epochs} epochs...")
-        print(f"Early stopping: Monitor='{metric_name}', Patience={patience}, Mode='{metric_mode}'")
-
-        for epoch in range(epochs):
-            start_time = time.time()
-            train_loss = self._train_epoch(train_loader)
-            val_loss, val_metrics = self._validate_epoch(val_loader)
-            epoch_time = time.time() - start_time
-
-            self.history['train_loss'].append(train_loss)
-            self.history['val_loss'].append(val_loss)
-            self.history['val_metrics'].append(val_metrics)
-
-            print(f"Epoch {epoch+1}/{epochs} [{epoch_time:.2f}s] - "
-                  f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}", end="")
-            for name, value in val_metrics.items():
-                 print(f", {name}: {value:.4f}", end="")
-            print()
-
-            # Early Stopping & Best Model Check
-            current_metric = val_loss if metric_name == 'val_loss' else val_metrics.get(metric_name, None)
-            if current_metric is None and metric_name != 'val_loss':
-                 print(f"Warning: Early stopping metric '{metric_name}' not found. Using val_loss.")
-                 current_metric = val_loss
-                 metric_name = 'val_loss'
-                 metric_mode = 'min'
-                 
-            is_better = False
-            if metric_mode == 'min':
-                 if current_metric < self.best_metric: is_better = True
-            else: # mode == 'max'
-                 if current_metric > self.best_metric: is_better = True
-            
-            if is_better:
-                print(f"  Validation metric ({metric_name}) improved ({self.best_metric:.4f} -> {current_metric:.4f}). Saving best model...")
-                self.best_metric = current_metric
-                self.epochs_no_improve = 0
-                self.best_epoch = epoch
-                self._save_checkpoint(epoch, is_best=True) # Saves model + decoder head state
-            else:
-                self.epochs_no_improve += 1
-                print(f"  Validation metric ({metric_name}) did not improve for {self.epochs_no_improve} epoch(s).")
-
-            if patience > 0 and self.epochs_no_improve >= patience:
-                print(f"Early stopping triggered after {patience} epochs with no improvement.")
-                break
-        
-        print(f"Training finished. Best model from epoch {self.best_epoch+1} saved.")
-        best_model_path = os.path.join(self.checkpoint_dir, "checkpoint_best.pth")
-        if os.path.exists(best_model_path):
-             print(f"Loading best model weights from {best_model_path}")
-             checkpoint = torch.load(best_model_path, map_location=self.device)
-             self.model.load_state_dict(checkpoint['model_state_dict'])
-             self.decoder_head.load_state_dict(checkpoint['decoder_head_state_dict'])
-             
-        final_history = {
-             'train_loss': self.history['train_loss'],
-             'val_loss': self.history['val_loss'],
-             'val_metrics': self.history['val_metrics'],
-             'best_epoch': self.best_epoch + 1,
-             'best_val_metrics': self.history['val_metrics'][self.best_epoch] if self.best_epoch >= 0 else None
-        }
-        return final_history
+from src.modules.numerical import NumericalModule
+from training.numerical_trainer import NumericalCompetenceTrainer
+from src.core.bitnet_integration import apply_bitnet_quantization, get_bitnet_model
 
 
-class SyntheticNumericalDataset(Dataset):
+class NumericalDataset(torch.utils.data.Dataset):
     """
-    Generates synthetic data for **debugging/demonstrating** numerical training.
-
-    Creates random hidden state vectors for operands/operation and a scalar 
-    target result based on a simple arithmetic operation.
-    **Uses random vectors for hidden states - replace with meaningful representations.**
+    Dataset for numerical operations with real embeddings.
+    
+    This dataset handles both synthetic data generation and loading
+    real data from pre-computed embeddings.
     """
-    def __init__(self, 
-                 num_samples: int = 10000, 
-                 hidden_dim: int = 256, 
-                 value_range: tuple = (0, 100), # Range for operands
-                 operations: list = ['add', 'subtract', 'multiply'], # Exclude divide for simplicity?
-                 seed: int = 42):
-        """Initialize the synthetic dataset."""
-        self.num_samples = num_samples
+    
+    def __init__(self, hidden_dim=768, size=10000, operations=None, value_range=None, device='cpu', 
+                 real_data_path=None, embedding_model=None):
+        """
+        Initialize dataset for numerical operations.
+        
+        Args:
+            hidden_dim: Dimension of hidden representations
+            size: Number of examples to generate (for synthetic mode)
+            operations: List of operations to include (add, subtract, multiply, divide)
+            value_range: Range of values for operands (min_val, max_val)
+            device: Device to store tensors on
+            real_data_path: Path to real data (if None, generate synthetic)
+            embedding_model: Model for generating embeddings (for real data)
+        """
         self.hidden_dim = hidden_dim
-        self.value_range = value_range
-        self.operations = operations
-        self.num_ops = len(operations)
-        self.seed = seed
+        self.device = device
+        self.size = size
+        self.operations = operations or ['add', 'subtract', 'multiply', 'divide']
+        self.value_range = value_range or (0, 100)
+        self.embedding_model = embedding_model
         
-        print(f"Generating {num_samples} synthetic numerical samples...")
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
-        random.seed(self.seed) # For random.choice
-
-        self.h1_states = torch.randn(num_samples, hidden_dim)
-        self.h2_states = torch.randn(num_samples, hidden_dim)
-        self.h_op_states = torch.randn(num_samples, hidden_dim)
-        self.target_results = torch.zeros(num_samples, 1)
-
-        min_val, max_val = value_range
-        for i in range(num_samples):
-            a = random.uniform(min_val, max_val)
-            b = random.uniform(min_val, max_val)
-            op_name = random.choice(self.operations)
-            op_idx = self.operations.index(op_name)
-
-            if op_name == 'add': result = a + b
-            elif op_name == 'subtract': result = a - b
-            elif op_name == 'multiply': result = a * b
-            elif op_name == 'divide': result = a / (b + 1e-6) # Avoid division by zero
-            else: result = 0.0 # Should not happen
-
-            # Store target result
-            self.target_results[i] = result
+        if real_data_path and os.path.exists(real_data_path):
+            print(f"Loading real data from {real_data_path}")
+            self.load_real_data(real_data_path)
+        else:
+            print(f"Generating synthetic data with {size} examples")
+            self.generate_synthetic_data()
             
-            # --- Placeholder: Inject minimal info into random hidden states ---
-            # This is highly artificial and should be replaced by representations
-            # learned or extracted from a real model/task.
-            self.h1_states[i, 0] = a / max_val if max_val != 0 else a # Normalize roughly
-            self.h2_states[i, 0] = b / max_val if max_val != 0 else b
-            # Use one-hot like encoding for operation in h_op
-            self.h_op_states[i, op_idx] = 1.0 
-            self.h_op_states[i, self.num_ops:] *= 0.1 # Dampen other dimensions
-            # ------------------------------------------------------------------
-
-        print("Synthetic data generation complete.")
-
-    def __len__(self) -> int:
-        return self.num_samples
-
-    def __getitem__(self, idx: int) -> dict:
-        if idx >= self.num_samples:
-            raise IndexError("Index out of bounds")
+    def generate_synthetic_data(self):
+        """Generate synthetic data for numerical operations."""
+        min_val, max_val = self.value_range
+        
+        # Initialize storage
+        self.h1_list = []
+        self.h2_list = []
+        self.h_op_list = []
+        self.targets = []
+        self.original_operands = []
+        
+        # Generate examples
+        for _ in range(self.size):
+            # Select random operation
+            operation = np.random.choice(self.operations)
+            
+            # Generate operands with appropriate constraints
+            a = np.random.randint(min_val, max_val)
+            
+            # For division, ensure clean division when possible
+            if operation == 'divide':
+                if a > 1 and np.random.random() < 0.8:  # 80% clean division
+                    high_val = min(a, self.value_range[1] // 2)
+                    if high_val > 1:  # Ensure we have a valid range for randint
+                        b = np.random.randint(1, high_val)
+                        b = b * (a // b) if a // b > 0 else b  # Make a divisible by b
+                    else:
+                        b = 1  # Default to 1 if we can't find a valid divisor
+                else:
+                    b = max(1, np.random.randint(min_val, max_val))  # Avoid division by zero
+            else:
+                b = np.random.randint(min_val, max_val)
+                
+            # Compute result based on operation
+            if operation == 'add':
+                result = a + b
+            elif operation == 'subtract':
+                result = a - b
+            elif operation == 'multiply':
+                result = a * b
+            elif operation == 'divide':
+                result = a / b
+            else:
+                raise ValueError(f"Unknown operation: {operation}")
+                
+            # Create hidden state representations with correct dimension
+            h1 = torch.randn(self.hidden_dim, device=self.device)
+            h2 = torch.randn(self.hidden_dim, device=self.device)
+            h_op = torch.randn(self.hidden_dim, device=self.device)
+            
+            # Add some weak signal about the actual values to make training possible
+            # In a real scenario, these would be learned embeddings from a pre-trained model
+            max_magnitude = max(max_val, abs(result))
+            scaling_factor = 1.0 / max(1.0, max_magnitude)
+            
+            # Add a small signal to a random subset of dimensions - safely handling dimensions
+            signal_size = min(20, max(1, self.hidden_dim // 4))  # Use at most 1/4 of dimensions, at least 1
+            if signal_size > 0:
+                signal_dims = np.random.choice(self.hidden_dim, size=min(signal_size, self.hidden_dim), replace=False)
+                if len(signal_dims) > 0:
+                    h1[signal_dims[0]] += a * scaling_factor * 0.5
+                    h2[signal_dims[0]] += b * scaling_factor * 0.5
+            
+            # Add a signal about the operation type
+            op_idx = min(self.operations.index(operation), len(self.operations)-1)
+            op_dim = np.random.randint(0, self.hidden_dim)  # Safer than choice with size param
+            h_op[op_dim] += (op_idx + 1) * 0.5
+            
+            # Store the example
+            self.h1_list.append(h1)
+            self.h2_list.append(h2)
+            self.h_op_list.append(h_op)
+            self.targets.append(torch.tensor([result], dtype=torch.float32, device=self.device))
+            self.original_operands.append((a, b, operation))
+            
+        # Convert lists to tensors
+        self.h1_data = torch.stack(self.h1_list)
+        self.h2_data = torch.stack(self.h2_list)
+        self.h_op_data = torch.stack(self.h_op_list)
+        self.target_data = torch.stack(self.targets)
+            
+    def load_real_data(self, data_path):
+        """Load real data with pre-computed embeddings."""
+        data = torch.load(data_path, map_location=self.device, weights_only=False)
+        
+        # Extract data components
+        self.h1_data = data.get('h1_data').to(self.device)
+        self.h2_data = data.get('h2_data').to(self.device)
+        self.h_op_data = data.get('h_op_data').to(self.device)
+        self.target_data = data.get('target_data').to(self.device)
+        self.original_operands = data.get('original_operands', [])
+        self.operations = data.get('operations', ['add', 'subtract', 'multiply', 'divide'])
+        
+        # Get hidden dimension from the data
+        self.hidden_dim = data.get('hidden_dim', self.h1_data.shape[1])
+        
+        # Update size based on loaded data
+        self.size = len(self.h1_data)
+        
+        print(f"Loaded dataset with {self.size} samples and hidden dimension {self.hidden_dim}")
+        
+    def save_data(self, output_path):
+        """Save dataset to disk."""
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Prepare data for saving
+        data = {
+            'h1_data': self.h1_data.cpu(),
+            'h2_data': self.h2_data.cpu(),
+            'h_op_data': self.h_op_data.cpu(),
+            'target_data': self.target_data.cpu(),
+            'original_operands': self.original_operands,
+            'operations': self.operations,
+            'value_range': self.value_range,
+            'hidden_dim': self.hidden_dim
+        }
+        
+        # Save data
+        torch.save(data, output_path)
+        print(f"Saved data to {output_path}")
+        
+    def __len__(self):
+        """Get dataset size."""
+        return self.size
+        
+    def __getitem__(self, idx):
+        """Get a single example."""
         return {
-            'h1': self.h1_states[idx].float(),
-            'h2': self.h2_states[idx].float(),
-            'h_op': self.h_op_states[idx].float(),
-            'target_result': self.target_results[idx].float()
+            'h1': self.h1_data[idx],
+            'h2': self.h2_data[idx],
+            'h_op': self.h_op_data[idx],
+            'target': self.target_data[idx],
+            'original_operands': self.original_operands[idx] if idx < len(self.original_operands) else None
         }
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Numerical Module Training (Placeholder)")
-    # Model/Data Args
-    parser.add_argument("--hidden_dim", type=int, default=256, help="Input hidden dimension")
-    parser.add_argument("--num_dim", type=int, default=32, help="Internal numerical dimension")
-    parser.add_argument("--quantize", action="store_true", help="Use BitLinear layers")
-    # Training Args
-    parser.add_argument("--epochs", type=int, default=50, help="Max training epochs")
-    parser.add_argument("--batch_size", type=int, default=128, help="Training batch size")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adam", "adamw"], help="Optimizer type")
-    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay for AdamW")
-    # Early Stopping Args
-    parser.add_argument("--early_stopping_patience", type=int, default=7, help="Patience for early stopping") # Might need more patience
-    parser.add_argument("--early_stopping_metric", type=str, default="val_mae", help="Metric for early stopping (e.g., val_mae)")
-    parser.add_argument("--early_stopping_mode", type=str, default="min", choices=["min", "max"], help="Early stopping mode")
-    # Runtime Args
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device")
-    parser.add_argument("--num_workers", type=int, default=min(os.cpu_count(), 2), help="DataLoader workers")
-    parser.add_argument("--seed", type=int, default=789, help="Random seed")
-    parser.add_argument("--experiment_name", type=str, default="NumericalSynthetic", help="Logging directory name")
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Train Numerical Competence Module")
     
-    return parser.parse_args()
+    # Data configuration
+    parser.add_argument("--train_data_path", type=str, default=None,
+                      help="Path to training data")
+    parser.add_argument("--val_data_path", type=str, default=None,
+                      help="Path to validation data")
+    parser.add_argument("--output_dir", type=str, default="outputs/numerical",
+                      help="Directory for outputs")
+    parser.add_argument("--mode", type=str, default="synthetic",
+                      choices=["synthetic", "real"],
+                      help="Data generation mode")
+    
+    # Model configuration
+    parser.add_argument("--hidden_dim", type=int, default=768,
+                      help="Hidden dimension size")
+    parser.add_argument("--num_dim", type=int, default=32,
+                      help="Numerical representation dimension")
+    parser.add_argument("--quantize", action="store_true",
+                      help="Use BitNet quantization")
+    
+    # Training configuration
+    parser.add_argument("--batch_size", type=int, default=32,
+                      help="Batch size for training")
+    parser.add_argument("--epochs", type=int, default=50,
+                      help="Number of training epochs")
+    parser.add_argument("--learning_rate", type=float, default=1e-4,
+                      help="Learning rate")
+    parser.add_argument("--weight_decay", type=float, default=1e-5,
+                      help="Weight decay")
+    parser.add_argument("--optimizer", type=str, default="adamw",
+                      choices=["adam", "adamw", "sgd"],
+                      help="Optimizer to use")
+    parser.add_argument("--early_stopping_patience", type=int, default=10,
+                      help="Patience for early stopping")
+    parser.add_argument("--save_interval", type=int, default=5,
+                      help="Epoch interval for saving checkpoints")
+    
+    # Runtime configuration
+    parser.add_argument("--device", type=str, default=None,
+                      help="Device to use (cuda, cpu)")
+    parser.add_argument("--seed", type=int, default=42,
+                      help="Random seed")
+    parser.add_argument("--data_parallel", action="store_true",
+                      help="Use DataParallel for multi-GPU training")
+    
+    # Parse and validate arguments
+    args = parser.parse_args()
+    
+    # Infer device if not specified
+    if args.device is None:
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+    # Ensure output directory exists
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    return args
 
-def set_seed(seed: int):
-    """Set random seeds for reproducibility."""
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    random.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
 
-def create_model_and_head(args):
-    """Creates the NumericalModule and a temporary decoder head."""
-    print(f"Creating NumericalModule (hidden_dim={args.hidden_dim}, num_dim={args.num_dim}, "
-          f"BitLinear={args.quantize})")
+def create_model(args):
+    """Create and initialize numerical module."""
+    print(f"Creating numerical module with hidden_dim={args.hidden_dim}, num_dim={args.num_dim}")
+    
+    # Create model with BitNet quantization if specified
     model = NumericalModule(
         hidden_dim=args.hidden_dim,
         num_dim=args.num_dim,
-        bit_linear=args.quantize
+        bit_linear=args.quantize  # Use BitLinear layers if quantization is enabled
     )
-    # --- Temporary Decoder Head ---
-    # Add a simple linear head to decode the module's output hidden state 
-    # into a scalar prediction for training loss calculation.
-    # This head is *only* used for this specific training setup.
-    decoder_head = nn.Linear(args.hidden_dim, 1) 
-    print("Created temporary nn.Linear decoder head (hidden_dim -> 1) for training.")
-    # -----------------------------
-    return model.to(args.device), decoder_head.to(args.device)
+    
+    # Move model to device
+    model = model.to(args.device)
+    
+    # Apply DataParallel if enabled and multiple GPUs available
+    if args.data_parallel and torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs")
+        model = nn.DataParallel(model)
+        
+    return model
+
+
+def create_optimizer(model, args):
+    """Create optimizer based on arguments."""
+    if args.optimizer == "adam":
+        return torch.optim.Adam(
+            model.parameters(),
+            lr=args.learning_rate,
+            weight_decay=args.weight_decay
+        )
+    elif args.optimizer == "adamw":
+        return torch.optim.AdamW(
+            model.parameters(),
+            lr=args.learning_rate,
+            weight_decay=args.weight_decay
+        )
+    elif args.optimizer == "sgd":
+        return torch.optim.SGD(
+            model.parameters(),
+            lr=args.learning_rate,
+            momentum=0.9,
+            weight_decay=args.weight_decay
+        )
+    else:
+        raise ValueError(f"Unknown optimizer: {args.optimizer}")
+
 
 def create_datasets(args):
-    """Creates synthetic training and validation datasets."""
-    print("Creating synthetic Numerical datasets (FOR DEBUGGING/DEMO ONLY)...")
-    print("Replace with real data loading using meaningful input representations.")
-    train_dataset = SyntheticNumericalDataset(
-        num_samples=20000, # Needs more data potentially
-        hidden_dim=args.hidden_dim,
-        seed=args.seed
+    """Create training and validation datasets."""
+    # Default configurations
+    operations = ['add', 'subtract', 'multiply', 'divide']
+    train_range = (0, 100)
+    val_range = (0, 100)
+    extrapolation_range = (100, 1000)
+    
+    # Training dataset
+    if args.train_data_path and os.path.exists(args.train_data_path):
+        # Load real training data
+        train_dataset = NumericalDataset(
+            hidden_dim=args.hidden_dim,
+            device=args.device,
+            real_data_path=args.train_data_path
+        )
+        
+        # Update hidden_dim to match the loaded data
+        if hasattr(train_dataset, 'hidden_dim'):
+            args.hidden_dim = train_dataset.hidden_dim
+    else:
+        # Generate synthetic training data
+        train_dataset = NumericalDataset(
+            hidden_dim=args.hidden_dim,
+            size=10000,  # Default size for synthetic data
+            operations=operations,
+            value_range=train_range,
+            device=args.device
+        )
+        
+        # Save synthetic data if in synthetic mode
+        if args.mode == "synthetic":
+            os.makedirs(os.path.join(args.output_dir, "data"), exist_ok=True)
+            train_dataset.save_data(os.path.join(args.output_dir, "data", "train_data.pt"))
+    
+    # Validation dataset
+    if args.val_data_path and os.path.exists(args.val_data_path):
+        # Load real validation data
+        val_dataset = NumericalDataset(
+            hidden_dim=args.hidden_dim,  # Use updated hidden_dim
+            device=args.device,
+            real_data_path=args.val_data_path
+        )
+    else:
+        # Generate synthetic validation data
+        val_dataset = NumericalDataset(
+            hidden_dim=args.hidden_dim,  # Use updated hidden_dim
+            size=2000,  # Default size for synthetic data
+            operations=operations,
+            value_range=val_range,
+            device=args.device
+        )
+        
+        # Save synthetic data if in synthetic mode
+        if args.mode == "synthetic":
+            os.makedirs(os.path.join(args.output_dir, "data"), exist_ok=True)
+            val_dataset.save_data(os.path.join(args.output_dir, "data", "val_data.pt"))
+    
+    # Check for real extrapolation data
+    extrapolation_data_path = os.path.join(args.output_dir, "data", "extrapolation_data.pt")
+    if os.path.exists(args.train_data_path.replace("train_data.pt", "extrapolation_data.pt")):
+        # Use real extrapolation data if available
+        extrapolation_data_path = args.train_data_path.replace("train_data.pt", "extrapolation_data.pt")
+        extrapolation_dataset = NumericalDataset(
+            hidden_dim=args.hidden_dim,  # Use updated hidden_dim
+            device=args.device,
+            real_data_path=extrapolation_data_path
+        )
+    else:
+        # Generate synthetic extrapolation data matching the hidden dimension of training data
+        extrapolation_dataset = NumericalDataset(
+            hidden_dim=args.hidden_dim,  # Use updated hidden_dim
+            size=2000,  # Default size for synthetic data
+            operations=operations,
+            value_range=extrapolation_range,
+            device=args.device
+        )
+        
+        # Save extrapolation data
+        os.makedirs(os.path.join(args.output_dir, "data"), exist_ok=True)
+        extrapolation_dataset.save_data(os.path.join(args.output_dir, "data", "extrapolation_data.pt"))
+    
+    return train_dataset, val_dataset, extrapolation_dataset
+
+
+def train_model(model, datasets, args):
+    """Train the numerical competence module."""
+    # Unpack datasets
+    train_dataset, val_dataset, extrapolation_dataset = datasets
+    
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,  # Use 0 for simple dataset
+        pin_memory=False  # Disable pin_memory to avoid CUDA tensor issue
     )
-    val_dataset = SyntheticNumericalDataset(
-        num_samples=4000,
-        hidden_dim=args.hidden_dim,
-        seed=args.seed + 1
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=False  # Disable pin_memory to avoid CUDA tensor issue
     )
-    return train_dataset, val_dataset
+    
+    # Create optimizer
+    optimizer = create_optimizer(model, args)
+    
+    # Create loss function
+    criterion = nn.MSELoss()
+    
+    # Create temp decoder head for proper decoding during training
+    class TemporaryDecoderHead(nn.Module):
+        def __init__(self, hidden_dim):
+            super().__init__()
+            self.decoder = nn.Linear(hidden_dim, 1)
+            
+        def forward(self, hidden):
+            return self.decoder(hidden)
+    
+    # Add temporary decoder head
+    decoder_head = TemporaryDecoderHead(args.hidden_dim).to(args.device)
+    decoder_optimizer = torch.optim.AdamW(decoder_head.parameters(), lr=args.learning_rate)
+    
+    # Create training configuration
+    config = {
+        "hidden_dim": args.hidden_dim,
+        "num_dim": args.num_dim,
+        "batch_size": args.batch_size,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "optimizer": args.optimizer,
+        "early_stopping_patience": args.early_stopping_patience,
+        "save_interval": args.save_interval,
+        "operations": ['add', 'subtract', 'multiply', 'divide'],
+        "value_ranges": {
+            "train": train_dataset.value_range,
+            "validation": val_dataset.value_range,
+            "extrapolation": extrapolation_dataset.value_range
+        },
+        "quantize": args.quantize,
+        "plot_interval": 5
+    }
+    
+    # Print training configuration
+    print("\n=== Training Configuration ===")
+    for key, value in config.items():
+        print(f"{key}: {value}")
+    print("=============================\n")
+    
+    # Initialize training history
+    train_loss_history = []
+    val_loss_history = []
+    train_acc_history = []
+    val_acc_history = []
+    extrapolation_acc_history = []
+    
+    # Track best model for early stopping
+    best_val_loss = float('inf')
+    early_stopping_counter = 0
+    
+    def evaluate(dataset, loader_name):
+        """Evaluate model on a dataset."""
+        model.eval()
+        total_loss = 0
+        correct = 0
+        total = 0
+        
+        # Create loader if provided a dataset
+        if isinstance(dataset, torch.utils.data.Dataset):
+            loader = DataLoader(
+                dataset,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=False  # Disable pin_memory to avoid CUDA tensor issue
+            )
+        else:
+            loader = dataset  # Assume dataset is already a DataLoader
+            
+        with torch.no_grad():
+            for batch in loader:
+                # Extract data
+                h1 = batch['h1']
+                h2 = batch['h2']
+                h_op = batch['h_op']
+                targets = batch['target'].to(args.device).float()
+                
+                # Forward pass through numerical module
+                result_hidden, op_weights = model(h1, h2, h_op)
+                
+                # Forward pass through temporary decoder
+                predictions = decoder_head(result_hidden)
+                
+                # Calculate loss
+                loss = criterion(predictions, targets)
+                total_loss += loss.item() * len(h1)
+                
+                # Calculate accuracy with tolerance
+                abs_error = torch.abs(predictions - targets)
+                rel_tolerance = torch.abs(targets) * 0.05  # 5% relative tolerance
+                min_tolerance = torch.tensor(0.01, device=args.device)
+                tolerance = torch.max(rel_tolerance, min_tolerance)
+                
+                correct += torch.sum((abs_error <= tolerance).float()).item()
+                total += len(h1)
+        
+        # Calculate metrics
+        avg_loss = total_loss / total if total > 0 else float('inf')
+        accuracy = correct / total if total > 0 else 0
+        
+        print(f"{loader_name} - Loss: {avg_loss:.6f}, Accuracy: {accuracy:.4f}")
+        return avg_loss, accuracy
+    
+    # Training loop
+    print("\n=== Beginning Training ===")
+    for epoch in range(args.epochs):
+        # Training phase
+        model.train()
+        train_loss = 0
+        train_correct = 0
+        train_total = 0
+        
+        # Initialize progress bar
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
+        
+        for batch in progress_bar:
+            # Extract data
+            h1 = batch['h1']
+            h2 = batch['h2']
+            h_op = batch['h_op']
+            targets = batch['target'].to(args.device).float()
+            
+            # Reset gradients
+            optimizer.zero_grad()
+            decoder_optimizer.zero_grad()
+            
+            # Forward pass through numerical module
+            result_hidden, op_weights = model(h1, h2, h_op)
+            
+            # Forward pass through temporary decoder
+            predictions = decoder_head(result_hidden)
+            
+            # Calculate loss
+            loss = criterion(predictions, targets)
+            
+            # Backward pass
+            loss.backward()
+            
+            # Update parameters
+            optimizer.step()
+            decoder_optimizer.step()
+            
+            # Calculate accuracy with tolerance
+            abs_error = torch.abs(predictions - targets)
+            rel_tolerance = torch.abs(targets) * 0.05  # 5% relative tolerance
+            min_tolerance = torch.tensor(0.01, device=args.device)
+            tolerance = torch.max(rel_tolerance, min_tolerance)
+            
+            batch_correct = torch.sum((abs_error <= tolerance).float()).item()
+            
+            # Update metrics
+            train_loss += loss.item() * len(h1)
+            train_correct += batch_correct
+            train_total += len(h1)
+            
+            # Update progress bar
+            progress_bar.set_postfix({
+                'loss': loss.item(),
+                'acc': batch_correct / len(h1) if len(h1) > 0 else 0
+            })
+        
+        # Calculate epoch metrics
+        train_epoch_loss = train_loss / train_total if train_total > 0 else float('inf')
+        train_epoch_acc = train_correct / train_total if train_total > 0 else 0
+        
+        # Evaluate on validation set
+        val_epoch_loss, val_epoch_acc = evaluate(val_dataset, "Validation")
+        
+        # Evaluate on extrapolation set
+        _, extrapolation_epoch_acc = evaluate(extrapolation_dataset, "Extrapolation")
+        
+        # Print epoch summary
+        print(f"Epoch {epoch+1}/{args.epochs} - Train Loss: {train_epoch_loss:.6f}, Train Acc: {train_epoch_acc:.4f}, Val Loss: {val_epoch_loss:.6f}, Val Acc: {val_epoch_acc:.4f}, Extrapolation Acc: {extrapolation_epoch_acc:.4f}")
+        
+        # Update history
+        train_loss_history.append(train_epoch_loss)
+        val_loss_history.append(val_epoch_loss)
+        train_acc_history.append(train_epoch_acc)
+        val_acc_history.append(val_epoch_acc)
+        extrapolation_acc_history.append(extrapolation_epoch_acc)
+        
+        # Check for early stopping
+        if val_epoch_loss < best_val_loss:
+            best_val_loss = val_epoch_loss
+            early_stopping_counter = 0
+            
+            # Save best model
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'decoder_state_dict': decoder_head.state_dict(),
+                'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+                'loss': best_val_loss,
+                'config': config
+            }
+            torch.save(checkpoint, os.path.join(args.output_dir, "best_model.pt"), weights_only=False)
+            print(f"Saved best model with validation loss: {best_val_loss:.6f}")
+        else:
+            early_stopping_counter += 1
+            print(f"Early stopping counter: {early_stopping_counter}/{args.early_stopping_patience}")
+            
+            if early_stopping_counter >= args.early_stopping_patience:
+                print(f"Early stopping triggered after {epoch+1} epochs")
+                break
+        
+        # Save checkpoint at regular intervals
+        if (epoch + 1) % args.save_interval == 0:
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'decoder_state_dict': decoder_head.state_dict(),
+                'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+                'loss': val_epoch_loss,
+                'config': config
+            }
+            torch.save(checkpoint, os.path.join(args.output_dir, f"checkpoint_epoch_{epoch+1}.pt"), weights_only=False)
+            print(f"Saved checkpoint for epoch {epoch+1}")
+            
+        # Generate plots at regular intervals
+        if (epoch + 1) % config["plot_interval"] == 0:
+            # Create directory for plots
+            os.makedirs(os.path.join(args.output_dir, "plots"), exist_ok=True)
+            
+            # Create accuracy plot
+            plt.figure(figsize=(12, 6))
+            plt.plot(range(1, len(train_acc_history) + 1), train_acc_history, 'b-', label='Training')
+            plt.plot(range(1, len(val_acc_history) + 1), val_acc_history, 'g-', label='Validation')
+            plt.plot(range(1, len(extrapolation_acc_history) + 1), extrapolation_acc_history, 'r-', label='Extrapolation')
+            plt.title('Numerical Competence Accuracy')
+            plt.xlabel('Epoch')
+            plt.ylabel('Accuracy')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(os.path.join(args.output_dir, "plots", f"accuracy_epoch_{epoch+1}.png"))
+            plt.close()
+            
+            # Create loss plot
+            plt.figure(figsize=(12, 6))
+            plt.plot(range(1, len(train_loss_history) + 1), train_loss_history, 'b-', label='Training')
+            plt.plot(range(1, len(val_loss_history) + 1), val_loss_history, 'g-', label='Validation')
+            plt.title('Numerical Competence Loss')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(os.path.join(args.output_dir, "plots", f"loss_epoch_{epoch+1}.png"))
+            plt.close()
+    
+    # Generate final plots
+    os.makedirs(os.path.join(args.output_dir, "plots"), exist_ok=True)
+    
+    # Create accuracy plot
+    plt.figure(figsize=(12, 6))
+    plt.plot(range(1, len(train_acc_history) + 1), train_acc_history, 'b-', label='Training')
+    plt.plot(range(1, len(val_acc_history) + 1), val_acc_history, 'g-', label='Validation')
+    plt.plot(range(1, len(extrapolation_acc_history) + 1), extrapolation_acc_history, 'r-', label='Extrapolation')
+    plt.title('Numerical Competence Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(args.output_dir, "plots", "accuracy_final.png"))
+    plt.close()
+    
+    # Create loss plot
+    plt.figure(figsize=(12, 6))
+    plt.plot(range(1, len(train_loss_history) + 1), train_loss_history, 'b-', label='Training')
+    plt.plot(range(1, len(val_loss_history) + 1), val_loss_history, 'g-', label='Validation')
+    plt.title('Numerical Competence Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(args.output_dir, "plots", "loss_final.png"))
+    plt.close()
+    
+    # Print final performance
+    print("\n=== Final Performance ===")
+    print(f"Best Validation Loss: {best_val_loss:.6f}")
+    print(f"Final Validation Accuracy: {val_acc_history[-1]:.4f}")
+    print(f"Final Extrapolation Accuracy: {extrapolation_acc_history[-1]:.4f}")
+    print("=========================\n")
+    
+    # Return training history
+    return {
+        'train_loss': train_loss_history,
+        'val_loss': val_loss_history,
+        'train_acc': train_acc_history,
+        'val_acc': val_acc_history,
+        'extrapolation_acc': extrapolation_acc_history
+    }
+
 
 def main():
+    """Main function."""
+    # Parse arguments
     args = parse_args()
-    set_seed(args.seed)
-
-    print("=== Numerical Module Training Configuration ===")
-    for arg, value in vars(args).items():
-        print(f"  {arg}: {value}")
-    print("===============================================")
     
-    # Setup
-    model, decoder_head = create_model_and_head(args)
-    train_dataset, val_dataset = create_datasets(args)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size * 2, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    # Set random seed for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     
-    # Optimizer - Include parameters from both model and decoder head
-    optimizer_params = list(model.parameters()) + list(decoder_head.parameters())
-    if args.optimizer == "adamw":
-         optimizer = torch.optim.AdamW(optimizer_params, lr=args.learning_rate, weight_decay=args.weight_decay)
-    else:
-         optimizer = torch.optim.Adam(optimizer_params, lr=args.learning_rate)
-         
-    # Loss Function (MSE for predicting scalar result)
-    criterion = nn.MSELoss() 
-    print("Using MSE loss for predicting scalar numerical result.")
-
-    # Trainer
-    trainer_config = {
-        'epochs': args.epochs, 'learning_rate': args.learning_rate,
-        'early_stopping_patience': args.early_stopping_patience,
-        'early_stopping_metric': args.early_stopping_metric,
-        'early_stopping_mode': args.early_stopping_mode,
-    }
-    print("\nInitializing PlaceholderTrainer for Numerical Module...")
-    trainer = PlaceholderTrainer(
-        model=model, 
-        decoder_head=decoder_head, # Pass the decoder head
-        optimizer=optimizer, 
-        criterion=criterion, 
-        device=args.device, 
-        config=trainer_config, 
-        experiment_name=args.experiment_name
-    )
+    # Create datasets first to detect hidden dimension
+    datasets = create_datasets(args)
     
-    # Training
-    print(f"\nStarting training...")
-    try:
-        training_history = trainer.train(train_loader, val_loader)
-        
-        # Results
-        print("\nTraining finished!")
-        best_epoch = training_history.get('best_epoch', 'N/A')
-        best_metrics = training_history.get('best_val_metrics', {})
-        print(f"Best model checkpoint saved from epoch: {best_epoch}")
-        print(f"Best validation metrics ({args.early_stopping_metric}):")
-        for metric, value in best_metrics.items():
-             print(f"  {metric}: {value:.4f}" if isinstance(value, float) else f"  {metric}: {value}")
-        print(f"\nCheckpoints saved to: {trainer.checkpoint_dir}")
-        print("NOTE: Checkpoint includes both NumericalModule and temporary decoder head state.")
+    # Get hidden dimension from data if available
+    train_dataset, _, _ = datasets
+    if hasattr(train_dataset, 'hidden_dim'):
+        detected_hidden_dim = train_dataset.hidden_dim
+        if detected_hidden_dim != args.hidden_dim:
+            print(f"Note: Updating hidden dimension from {args.hidden_dim} to {detected_hidden_dim} to match data")
+            args.hidden_dim = detected_hidden_dim
+    
+    # Create model with updated hidden_dim
+    model = create_model(args)
+    
+    # Train model
+    history = train_model(model, datasets, args)
+    
+    # Print completion message
+    print(f"Training complete. Model and outputs saved to {args.output_dir}")
 
-    except Exception as e:
-         print(f"\nAn error occurred during training: {e}")
-         import traceback
-         traceback.print_exc()
-         sys.exit(1)
 
 if __name__ == "__main__":
     main()
